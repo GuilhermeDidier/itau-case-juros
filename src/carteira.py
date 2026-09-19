@@ -231,6 +231,51 @@ class Carteira:
             )
         return pd.DataFrame(linhas)
 
+    # --- cenários ---------------------------------------------------------
+
+    def rodar_cenarios(
+        self,
+        curva: Curva,
+        cenarios,
+        liquidacao: date | None = None,
+        vertices: list[int] | None = None,
+    ) -> pd.DataFrame:
+        """Aplica cada cenário e mede o impacto por full repricing.
+
+        O P&L de cenário NÃO é estimado por DV01: a carteira é reprecificada
+        inteira sobre a curva chocada. A coluna `erro_dv01` mostra quanto a
+        aproximação linear teria errado — é ela que justifica o custo de
+        fazer full repricing em vez do atalho.
+        """
+        liquidacao = liquidacao or curva.data
+        vertices = vertices or VERTICES_PADRAO
+        base = self.valor(curva, liquidacao)
+        krd = self.dv01_por_vertice(curva, vertices, liquidacao)
+
+        linhas = []
+        for cenario in cenarios:
+            chocada = cenario(curva)
+            pl = self.valor(chocada, liquidacao) - base
+
+            # estimativa linear: KRD vezes a variação em cada vértice
+            estimado = sum(
+                krd[v] * (chocada.taxa(v) - curva.taxa(v)) * 10_000 for v in vertices
+            )
+
+            linhas.append(
+                {
+                    "cenario": cenario.nome,
+                    "origem": getattr(cenario, "origem", "nomeado"),
+                    "PL": round(pl, 2),
+                    "PL_%": round(pl / base * 100, 4),
+                    "estimativa_dv01": round(estimado, 2),
+                    "erro_dv01": round(estimado - pl, 2),
+                }
+            )
+
+        df = pd.DataFrame(linhas)
+        return df.sort_values("PL").reset_index(drop=True)
+
     # --- aproximação contra verdade ---------------------------------------
 
     def aproximar_vs_reprecificar(

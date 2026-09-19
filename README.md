@@ -11,8 +11,8 @@ sobre uma carteira de renda fixa brasileira.
 | Curva de juros (fonte plugável) | pronto |
 | Apreçamento LTN / NTN-F | pronto, conferido contra o Tesouro Nacional |
 | DV01, convexidade, key rate duration | pronto |
-| Cenários nomeados e históricos | pendente |
-| Decomposição de P&L | pendente |
+| Cenários nomeados e históricos | pronto, cada um testado contra a própria definição |
+| Decomposição de P&L | pronto, fecha sem resíduo |
 | VaR / Expected Shortfall | pendente |
 | Interface | pendente |
 
@@ -74,6 +74,16 @@ assumidos.
 **Interpolação no log do fator de capitalização**, equivalente a interpolar a
 forward contínua. Interpolar a taxa spot direto produz forward serrilhada e
 estraga o cálculo de carrego.
+
+**Cenário histórico reaplica a variação, não substitui a curva.** A pergunta
+não é quanto a carteira valia naquele dia, é quanto ela perderia se aquele dia
+se repetisse hoje.
+
+**Dias históricos são ranqueados por impacto na carteira, não por bps.** No
+histórico disponível, o dia de maior movimento de curva (Copom, −25bps no
+overnight) foi o quarto menos relevante em P&L — e chegou a dar lucro. O pior
+dia real moveu 20bps e custou dez vezes mais. Ranquear por bps aponta o dia
+errado.
 
 **Key rate duration com bump em tenda.** O choque vale no vértice alvo e decai
 até zero nos vizinhos, achatando nas pontas. É essa convenção que faz a soma

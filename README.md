@@ -14,17 +14,24 @@ sobre uma carteira de renda fixa brasileira.
 | Cenários nomeados e históricos | pronto, cada um testado contra a própria definição |
 | Decomposição de P&L | pronto, fecha sem resíduo |
 | VaR / Expected Shortfall | máquina pronta; números aguardam histórico longo |
-| Interface | pendente |
+| Interface | pronta, verificada no navegador |
 
 ## Como rodar
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/pip install pandas numpy requests scipy xlrd openpyxl
+./.venv/bin/pip install pandas numpy requests scipy xlrd openpyxl streamlit plotly
 ./.venv/bin/python src/baixar_dados.py
-./.venv/bin/python tests/validar_pu_tesouro.py
-./.venv/bin/python tests/testar_fonte_csv.py
+
+# testes
+for t in tests/*.py; do ./.venv/bin/python "$t"; done
+
+# aplicação
+./.venv/bin/streamlit run app.py
 ```
+
+Quatro abas, na ordem em que a demonstração se conta: marcação da carteira,
+cenários, decomposição de P&L e risco.
 
 ## Validações
 
@@ -84,6 +91,12 @@ histórico disponível, o dia de maior movimento de curva (Copom, −25bps no
 overnight) foi o quarto menos relevante em P&L — e chegou a dar lucro. O pior
 dia real moveu 20bps e custou dez vezes mais. Ranquear por bps aponta o dia
 errado.
+
+**Paleta validada, não escolhida no olho.** Três slots categóricos em ordem
+fixa, par divergente azul↔vermelho para polaridade de ganho e perda, e os seis
+gates rodados (banda de luminosidade, piso de croma, separação para daltonismo,
+piso de visão normal, contraste). O tema do Streamlit é fixo em claro: o vídeo
+é gravado uma vez e não pode depender do tema do sistema de quem roda.
 
 **Três métodos de VaR, de propósito.** Histórico (sem hipótese de
 distribuição), paramétrico delta-normal (rápido, gaussiano) e Monte Carlo

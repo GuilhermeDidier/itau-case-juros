@@ -1,0 +1,12 @@
+# Tema fixo: o vídeo é gravado uma vez e não pode depender do tema do sistema
+# de quem roda. As cores são as mesmas da paleta validada em src/visual.py.
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
+font = "monospace"
+
+[server]
+headless = true

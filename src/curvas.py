@@ -67,13 +67,18 @@ class Curva:
         interpolar linearmente a taxa forward contínua, que é a convenção de
         mercado para a curva de DI. Interpolar a taxa spot direto produz
         forwards serrilhados e estraga o cálculo de carrego.
+
+        Fora do intervalo da curva a taxa é achatada na do vértice extremo.
+        Sem o clip, o fator de capitalização pararia de crescer enquanto o
+        prazo do denominador continuaria — e a taxa extrapolada despencaria
+        para perto de zero em silêncio, inflando o PU de qualquer fluxo além
+        do último vértice.
         """
         du = np.asarray(du, dtype=float)
+        limite = np.clip(du, self.dias_uteis[0], self.dias_uteis[-1])
         log_fator = np.log1p(self.taxas) * (self.dias_uteis / BASE_252)
-        interp = np.interp(du, self.dias_uteis, log_fator)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            taxa = np.expm1(np.where(du > 0, interp / (du / BASE_252), 0.0))
-        taxa = np.where(du <= 0, self.taxas[0], taxa)
+        interp = np.interp(limite, self.dias_uteis, log_fator)
+        taxa = np.expm1(interp / (limite / BASE_252))
         return float(taxa) if taxa.ndim == 0 else taxa
 
     def desconto(self, du) -> np.ndarray | float:

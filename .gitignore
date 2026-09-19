@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Dados brutos são baixáveis — ver src/baixar_dados.py
+data/raw/

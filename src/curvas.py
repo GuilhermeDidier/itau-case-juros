@@ -1,0 +1,381 @@
+"""Fontes de curva de juros, atrás de uma interface única.
+
+A escolha de arquitetura é deliberada: o resto do projeto só conhece
+`Curva` e `FonteCurva`. Trocar B3 por um CSV exportado da Bloomberg é
+configuração, não reescrita.
+
+Fontes hoje:
+  FonteB3        curva completa (269 vértices), mas só ~20 dias úteis de histórico
+  FonteCSV       qualquer CSV no formato data x vértice (o da Bloomberg entra aqui)
+
+Achado que custou caro: a API da B3 tem dois endpoints. `Search/GetList`
+ACEITA o parâmetro de data e o IGNORA — devolve sempre a curva mais recente,
+byte a byte. Só `Search/GetDownloadFile` honra a data de verdade. Usar o
+primeiro produziria "cenários históricos" que são o dia de hoje disfarçado.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Protocol
+
+import numpy as np
+import pandas as pd
+import requests
+
+from calendario import BASE_252, dias_uteis
+
+RAIZ = Path(__file__).resolve().parent.parent
+CACHE = RAIZ / "data" / "raw"
+
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+)
+
+
+@dataclass(frozen=True)
+class Curva:
+    """Curva zero em base 252, indexada por dias úteis.
+
+    `taxas` são taxas anuais efetivas em decimal (0.1365 = 13,65% a.a.).
+    """
+
+    data: date
+    dias_uteis: np.ndarray  # int, crescente
+    taxas: np.ndarray  # float, decimal
+    nome: str = "DI x pré"
+    fonte: str = ""
+
+    def __post_init__(self):
+        if len(self.dias_uteis) != len(self.taxas):
+            raise ValueError("dias_uteis e taxas com tamanhos diferentes")
+        if len(self.dias_uteis) < 2:
+            raise ValueError("curva precisa de ao menos 2 vértices")
+        if not np.all(np.diff(self.dias_uteis) > 0):
+            raise ValueError("dias_uteis precisa estar estritamente crescente")
+
+    def taxa(self, du) -> np.ndarray | float:
+        """Taxa interpolada.
+
+        Interpola linearmente no log do fator de capitalização — equivalente a
+        interpolar linearmente a taxa forward contínua, que é a convenção de
+        mercado para a curva de DI. Interpolar a taxa spot direto produz
+        forwards serrilhados e estraga o cálculo de carrego.
+        """
+        du = np.asarray(du, dtype=float)
+        log_fator = np.log1p(self.taxas) * (self.dias_uteis / BASE_252)
+        interp = np.interp(du, self.dias_uteis, log_fator)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            taxa = np.expm1(np.where(du > 0, interp / (du / BASE_252), 0.0))
+        taxa = np.where(du <= 0, self.taxas[0], taxa)
+        return float(taxa) if taxa.ndim == 0 else taxa
+
+    def desconto(self, du) -> np.ndarray | float:
+        """Fator de desconto para um prazo em dias úteis."""
+        du = np.asarray(du, dtype=float)
+        fator = (1.0 + self.taxa(du)) ** (-du / BASE_252)
+        return float(fator) if fator.ndim == 0 else fator
+
+    def deslocar(self, choque_bps: float) -> "Curva":
+        """Choque paralelo, em pontos-base."""
+        return Curva(
+            data=self.data,
+            dias_uteis=self.dias_uteis,
+            taxas=self.taxas + choque_bps / 10_000.0,
+            nome=f"{self.nome} {choque_bps:+.0f}bps",
+            fonte=self.fonte,
+        )
+
+    def com_choques(self, choques: dict[int, float]) -> "Curva":
+        """Cenário definido por âncoras: choque (bps) informado em alguns
+        vértices, interpolado linearmente entre eles e mantido constante fora.
+
+        É assim que se monta steepening e flattening — por exemplo
+        `{126: -30, 2520: -5}` derruba a ponta curta mais que a longa.
+
+        NÃO serve para key rate duration: com uma âncora só, a interpolação
+        devolve o mesmo valor em toda a curva e o "choque localizado" vira um
+        choque paralelo silencioso. Para isso existe `com_choque_local`.
+        """
+        if not choques:
+            return self
+        if len(choques) < 2:
+            raise ValueError(
+                "com_choques precisa de ao menos 2 âncoras — com uma só o "
+                "choque vira paralelo. Use com_choque_local para bump "
+                "localizado em um vértice."
+            )
+        pontos = np.array(sorted(choques), dtype=float)
+        valores = np.array([choques[int(p)] for p in pontos], dtype=float)
+        aplicado = np.interp(self.dias_uteis.astype(float), pontos, valores)
+        return Curva(
+            data=self.data,
+            dias_uteis=self.dias_uteis,
+            taxas=self.taxas + aplicado / 10_000.0,
+            nome=f"{self.nome} (cenário por âncoras)",
+            fonte=self.fonte,
+        )
+
+    def com_choque_local(
+        self, vertice: int, bps: float, vertices_chave: list[int]
+    ) -> "Curva":
+        """Bump localizado em um vértice, no formato-tenda da convenção de mesa.
+
+        O choque vale `bps` no vértice alvo e decai linearmente até zero nos
+        vértices-chave vizinhos. Nas duas pontas o choque fica achatado para
+        fora — é essa convenção que faz a soma das key rate durations
+        reproduzir o DV01 paralelo, em vez de sobrar ou faltar sensibilidade
+        nos extremos da curva.
+        """
+        chaves = sorted(set(int(v) for v in vertices_chave))
+        if vertice not in chaves:
+            raise ValueError(f"vértice {vertice} não está em vertices_chave")
+        if len(chaves) < 2:
+            raise ValueError("key rate duration precisa de ao menos 2 vértices-chave")
+
+        i = chaves.index(vertice)
+        x = self.dias_uteis.astype(float)
+        peso = np.zeros_like(x)
+
+        if i == 0:
+            direita = chaves[1]
+            peso = np.where(x <= vertice, 1.0, np.clip((direita - x) / (direita - vertice), 0, 1))
+        elif i == len(chaves) - 1:
+            esquerda = chaves[i - 1]
+            peso = np.where(x >= vertice, 1.0, np.clip((x - esquerda) / (vertice - esquerda), 0, 1))
+        else:
+            esquerda, direita = chaves[i - 1], chaves[i + 1]
+            subida = np.clip((x - esquerda) / (vertice - esquerda), 0, 1)
+            descida = np.clip((direita - x) / (direita - vertice), 0, 1)
+            peso = np.minimum(subida, descida)
+
+        return Curva(
+            data=self.data,
+            dias_uteis=self.dias_uteis,
+            taxas=self.taxas + peso * bps / 10_000.0,
+            nome=f"{self.nome} ({vertice}du {bps:+.0f}bps)",
+            fonte=self.fonte,
+        )
+
+    def para_frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"dias_uteis": self.dias_uteis, "taxa": self.taxas})
+
+
+class FonteCurva(Protocol):
+    def curva(self, data_ref: date) -> Curva: ...
+    def datas_disponiveis(self) -> list[date]: ...
+
+
+class FonteB3:
+    """Taxas referenciais da B3 (sistemaswebb3-derivativos).
+
+    Produtos úteis: PRE (DI x pré), DIC (DI x IPCA), SLP (Selic x pré).
+    """
+
+    BASE = "https://sistemaswebb3-derivativos.b3.com.br/referenceRatesProxy"
+
+    def __init__(self, produto: str = "PRE", usar_cache: bool = True):
+        self.produto = produto
+        self.usar_cache = usar_cache
+
+    def _chamar(self, rota: str, payload: dict) -> str:
+        token = base64.b64encode(json.dumps(payload).encode()).decode()
+        resp = requests.get(
+            f"{self.BASE}/{rota}/{token}", headers={"User-Agent": _UA}, timeout=30
+        )
+        resp.raise_for_status()
+        return resp.text
+
+    def datas_disponiveis(self) -> list[date]:
+        bruto = self._chamar(
+            "Search/GetDate", {"language": "pt-br", "id": self.produto}
+        )
+        return [date.fromisoformat(d[:10]) for d in json.loads(bruto)]
+
+    def curva(self, data_ref: date) -> Curva:
+        destino = CACHE / f"b3_{self.produto.lower()}_{data_ref.isoformat()}.csv"
+
+        if self.usar_cache and destino.exists():
+            texto = destino.read_text(encoding="utf-8")
+        else:
+            # GetDownloadFile: devolve CSV em base64 e HONRA a data.
+            bruto = self._chamar(
+                "Search/GetDownloadFile",
+                {"language": "pt-br", "id": self.produto, "date": data_ref.isoformat()},
+            ).strip().strip('"')
+            if not bruto:
+                raise ValueError(
+                    f"B3 não tem {self.produto} em {data_ref}. "
+                    f"A janela é curta — use datas_disponiveis()."
+                )
+            texto = base64.b64decode(bruto).decode("latin-1")
+            if self.usar_cache:
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                destino.write_text(texto, encoding="utf-8")
+
+        df = pd.read_csv(io.StringIO(texto), sep=";", decimal=",")
+        df.columns = [c.strip() for c in df.columns]
+        df = df.rename(
+            columns={
+                "Dias Úteis": "du",
+                "Dias Corridos": "dc",
+                "Preço/Taxa": "taxa",
+                "Descrição da Taxa": "nome",
+            }
+        )
+        df = df.dropna(subset=["du", "taxa"]).sort_values("du")
+
+        return Curva(
+            data=data_ref,
+            dias_uteis=df["du"].to_numpy(dtype=int),
+            taxas=df["taxa"].to_numpy(dtype=float) / 100.0,
+            nome=str(df["nome"].iloc[0]),
+            fonte=f"B3/{self.produto}",
+        )
+
+    def dias_corridos(self, data_ref: date) -> pd.DataFrame:
+        """Pares (dias úteis, dias corridos) publicados pela B3 — usados para
+        conferir o calendário de feriados contra a fonte oficial."""
+        self.curva(data_ref)
+        destino = CACHE / f"b3_{self.produto.lower()}_{data_ref.isoformat()}.csv"
+        df = pd.read_csv(destino, sep=";", decimal=",")
+        df.columns = [c.strip() for c in df.columns]
+        return df.rename(columns={"Dias Úteis": "du", "Dias Corridos": "dc"})[["du", "dc"]]
+
+
+class FonteCSV:
+    """CSV no formato: uma linha por data, uma coluna por vértice.
+
+    É o formato pedido na extração da Bloomberg. O cabeçalho das colunas de
+    vértice pode vir em dias úteis (252, 504) ou em rótulo de mercado
+    (1M, 6M, 1A, 2A, 5A, 10A) — os dois são aceitos.
+    """
+
+    ROTULOS = {
+        "1M": 21, "2M": 42, "3M": 63, "6M": 126, "9M": 189,
+        "1A": 252, "1Y": 252, "2A": 504, "2Y": 504, "3A": 756, "3Y": 756,
+        "4A": 1008, "4Y": 1008, "5A": 1260, "5Y": 1260,
+        "7A": 1764, "7Y": 1764, "10A": 2520, "10Y": 2520,
+    }
+
+    def __init__(self, caminho: str | Path, coluna_data: str = "data",
+                 taxas_em_percent: bool = True, nome: str = "DI x pré"):
+        self.caminho = Path(caminho)
+        self.coluna_data = coluna_data
+        self.taxas_em_percent = taxas_em_percent
+        self.nome = nome
+        self._df: pd.DataFrame | None = None
+
+    @staticmethod
+    def _ler(caminho: Path) -> pd.DataFrame:
+        """Lê o CSV sem assumir dialeto.
+
+        Export de Excel em locale pt-BR sai com ponto-e-vírgula e vírgula
+        decimal; em locale en-US sai com vírgula e ponto. O arquivo vem de um
+        terminal em instituição brasileira, então os dois são plausíveis e
+        adivinhar errado produz uma curva de números absurdos em silêncio.
+        """
+        cabecalho = caminho.read_text(encoding="utf-8-sig", errors="replace").splitlines()[0]
+        separador = max((";", ",", "\t"), key=cabecalho.count)
+        decimal = "," if separador == ";" else "."
+        return pd.read_csv(
+            caminho, sep=separador, decimal=decimal, encoding="utf-8-sig"
+        )
+
+    @staticmethod
+    def _datas(serie: pd.Series) -> pd.Series:
+        """ISO primeiro, dd/mm depois — sem deixar o pandas adivinhar."""
+        iso = pd.to_datetime(serie, format="%Y-%m-%d", errors="coerce")
+        if iso.notna().all():
+            return iso
+        return pd.to_datetime(serie, dayfirst=True, errors="coerce")
+
+    def _carregar(self) -> pd.DataFrame:
+        if self._df is not None:
+            return self._df
+
+        df = self._ler(self.caminho)
+        df.columns = [str(c).strip() for c in df.columns]
+        col = self.coluna_data if self.coluna_data in df.columns else df.columns[0]
+        df[col] = self._datas(df[col])
+        df = df.dropna(subset=[col]).set_index(col).sort_index()
+
+        vertices = {}
+        for c in df.columns:
+            chave = str(c).strip().upper()
+            if chave in self.ROTULOS:
+                vertices[c] = self.ROTULOS[chave]
+            else:
+                try:
+                    vertices[c] = int(float(chave))
+                except ValueError:
+                    continue
+        if not vertices:
+            raise ValueError(
+                f"Nenhuma coluna de vértice reconhecida em {self.caminho.name}. "
+                f"Use dias úteis (252, 504) ou rótulos (1A, 2A, 5A)."
+            )
+
+        df = df[list(vertices)].rename(columns=vertices)
+        df = df.reindex(sorted(df.columns), axis=1).astype(float)
+        self._df = df
+        return df
+
+    def datas_disponiveis(self) -> list[date]:
+        return [d.date() for d in self._carregar().index]
+
+    def curva(self, data_ref: date) -> Curva:
+        df = self._carregar()
+        alvo = pd.Timestamp(data_ref)
+        if alvo not in df.index:
+            anteriores = df.index[df.index <= alvo]
+            if len(anteriores) == 0:
+                raise ValueError(f"CSV não cobre {data_ref} nem datas anteriores.")
+            alvo = anteriores[-1]
+
+        linha = df.loc[alvo].dropna()
+        taxas = linha.to_numpy(dtype=float)
+        if self.taxas_em_percent:
+            taxas = taxas / 100.0
+
+        return Curva(
+            data=alvo.date(),
+            dias_uteis=np.array(linha.index, dtype=int),
+            taxas=taxas,
+            nome=self.nome,
+            fonte=f"CSV/{self.caminho.name}",
+        )
+
+
+def conferir_calendario(data_ref: date, produto: str = "PRE") -> pd.DataFrame:
+    """Confronta o calendário de feriados local contra os pares
+    (dias úteis, dias corridos) que a B3 publica.
+
+    Se bater em todos os vértices, a contagem de 252 está provada contra a
+    fonte oficial — não contra um teste que eu mesmo inventei.
+    """
+    from datetime import timedelta
+
+    fonte = FonteB3(produto)
+    pares = fonte.dias_corridos(data_ref).dropna()
+
+    linhas = []
+    for du_b3, dc in zip(pares["du"].astype(int), pares["dc"].astype(int)):
+        vencimento = data_ref + timedelta(days=int(dc))
+        linhas.append(
+            {
+                "dias_corridos": int(dc),
+                "du_b3": int(du_b3),
+                "du_calculado": dias_uteis(data_ref, vencimento),
+            }
+        )
+
+    df = pd.DataFrame(linhas)
+    df["diferenca"] = df["du_calculado"] - df["du_b3"]
+    return df

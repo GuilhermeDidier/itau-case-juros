@@ -13,7 +13,7 @@ sobre uma carteira de renda fixa brasileira.
 | DV01, convexidade, key rate duration | pronto |
 | Cenários nomeados e históricos | pronto, cada um testado contra a própria definição |
 | Decomposição de P&L | pronto, fecha sem resíduo |
-| VaR / Expected Shortfall | pendente |
+| VaR / Expected Shortfall | máquina pronta; números aguardam histórico longo |
 | Interface | pendente |
 
 ## Como rodar
@@ -84,6 +84,24 @@ histórico disponível, o dia de maior movimento de curva (Copom, −25bps no
 overnight) foi o quarto menos relevante em P&L — e chegou a dar lucro. O pior
 dia real moveu 20bps e custou dez vezes mais. Ranquear por bps aponta o dia
 errado.
+
+**Três métodos de VaR, de propósito.** Histórico (sem hipótese de
+distribuição), paramétrico delta-normal (rápido, gaussiano) e Monte Carlo
+(gaussiano, mas com reprecificação completa). A distância entre eles isola o
+custo de cada hipótese: histórico contra Monte Carlo mede a hipótese
+distribucional; Monte Carlo contra paramétrico mede a não linearidade.
+
+**Todo número de risco carrega o tamanho da amostra.** Com os 19 movimentos
+que a B3 disponibiliza, o quantil de 99% se apoia em 0,2 observação — o VaR
+histórico é o pior dia da amostra e não existe cauda para estimar. Medido
+hoje, o paramétrico sai MAIOR que o histórico, o oposto do esperado na
+literatura. Isso não refuta cauda gorda; mostra que 19 pontos não estimam
+cauda. Está escrito no módulo em vez de virar um número bonito sem ressalva.
+
+**PCA como sanidade antes de confiar na covariância.** Os três primeiros
+componentes saem nível (91,1%), inclinação (7,6%) e curvatura (1,0%), 99,7%
+acumulado — e o nome de cada um é deduzido do padrão de trocas de sinal das
+cargas, não escrito à mão. É o resultado canônico de curva de juros.
 
 **Key rate duration com bump em tenda.** O choque vale no vértice alvo e decai
 até zero nos vizinhos, achatando nas pontas. É essa convenção que faz a soma

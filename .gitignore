@@ -7,3 +7,4 @@ __pycache__/
 data/raw/*
 !data/raw/feriados_nacionais.xls
 data/download_di1.log
+src/extrair_bloomberg.py

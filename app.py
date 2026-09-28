@@ -740,6 +740,7 @@ with decomp:
         st.divider()
         st.markdown("##### Entre dois fechamentos")
 
+    r = None
     if len(datas) < 2:
         st.info("Histórico insuficiente para decompor P&L entre duas datas.")
     else:
@@ -752,11 +753,12 @@ with decomp:
             "para", value=datas[-1], min_value=datas[1], max_value=datas[-1],
             format="DD/MM/YYYY",
         ))
-        if d1 <= d0:
+        # Sem st.stop(): ele pararia o script inteiro e a aba Risco, que vem
+        # depois, ficaria em branco.
+        r = carteira.decompor_pl(curva_em(d0), curva_em(d1)) if d1 > d0 else None
+        if r is None:
             st.warning("A data final precisa ser posterior à inicial.")
-            st.stop()
-
-        r = carteira.decompor_pl(curva_em(d0), curva_em(d1))
+    if r is not None:
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Carrego", f"R$ {r['carrego']:,.0f}")

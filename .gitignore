@@ -5,3 +5,4 @@ __pycache__/
 
 # Dados brutos são baixáveis — ver src/baixar_dados.py
 data/raw/
+data/download_di1.log

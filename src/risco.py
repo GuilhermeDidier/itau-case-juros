@@ -316,3 +316,99 @@ def _nomear_componente(carga: np.ndarray) -> str:
     if trocas == 2:
         return "curvatura"
     return f"{trocas} trocas de sinal"
+
+
+# --- backtest ---------------------------------------------------------------
+
+
+def backtest_var(
+    carteira,
+    curva: Curva,
+    variacoes: pd.DataFrame,
+    confianca: float = 0.99,
+    janela: int = 500,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Testa se o VaR erra na frequência que promete.
+
+    Para cada dia t, estima o VaR só com as `janela` variações anteriores a t
+    e o compara com o P&L que a carteira de hoje teria no movimento real de
+    t. Um VaR de 99% bem calibrado é rompido em ~1% dos dias — nem mais
+    (subestima risco), nem muito menos (capital parado à toa).
+
+    A carteira fica fixa (a de hoje) de propósito: o que se testa é o
+    MÉTODO, não o histórico de gestão de uma carteira que não existiu.
+
+    Devolve a série dia a dia e um resumo por método, com o teste de Kupiec
+    (a taxa de exceções é compatível com 1 - confiança?) e o semáforo de
+    Basileia nas últimas 250 observações.
+    """
+    from scipy.stats import chi2
+
+    if len(variacoes) <= janela + 50:
+        raise ValueError(
+            f"backtest precisa de mais que {janela + 50} variações "
+            f"(janela de {janela} + dias testados); há {len(variacoes)}."
+        )
+    vertices = list(variacoes.columns)
+    base = carteira.valor(curva)
+    pl = np.array(
+        [carteira.valor(_curva_chocada(curva, vertices, linha)) - base
+         for linha in variacoes.to_numpy()]
+    )
+    krd = carteira.dv01_por_vertice(curva, vertices)
+    v = np.array([krd[x] for x in vertices], dtype=float)
+    z = _quantil_normal(confianca)
+    x = variacoes.to_numpy()
+
+    linhas = []
+    for t in range(janela, len(pl)):
+        passado = pl[t - janela:t]
+        var_hist = -float(np.quantile(passado, 1 - confianca))
+        cov = np.cov(x[t - janela:t], rowvar=False)
+        var_par = z * float(np.sqrt(v @ cov @ v))
+        linhas.append(
+            {
+                "data": variacoes.index[t],
+                "PL": pl[t],
+                "VaR_historico": var_hist,
+                "VaR_parametrico": var_par,
+            }
+        )
+    serie = pd.DataFrame(linhas).set_index("data")
+
+    p = 1 - confianca
+    resumo = []
+    for metodo, coluna in (("histórico", "VaR_historico"), ("paramétrico", "VaR_parametrico")):
+        excecao = serie["PL"] < -serie[coluna]
+        serie[f"excecao_{coluna[4:]}"] = excecao
+        n, k = len(excecao), int(excecao.sum())
+        taxa = k / n if n else 0.0
+        # Kupiec (POF): razão de verossimilhança contra a taxa prometida.
+        if 0 < k < n:
+            lr = -2 * ((n - k) * np.log(1 - p) + k * np.log(p)
+                       - (n - k) * np.log(1 - taxa) - k * np.log(taxa))
+        else:
+            lr = -2 * n * np.log(1 - p) if k == 0 else float("inf")
+        p_valor = float(1 - chi2.cdf(lr, 1))
+        ultimas = int(excecao.iloc[-250:].sum())
+        resumo.append(
+            {
+                "método": metodo,
+                "dias testados": n,
+                "exceções": k,
+                "esperadas": round(n * p, 1),
+                "taxa_%": round(taxa * 100, 2),
+                "Kupiec p-valor": round(p_valor, 3),
+                "veredito": "calibrado" if p_valor >= 0.05 else (
+                    "subestima risco" if taxa > p else "superestima risco"),
+                "exceções 250d": ultimas,
+                "Basileia": "verde" if ultimas <= 4 else ("amarelo" if ultimas <= 9 else "vermelho"),
+            }
+        )
+    return serie, pd.DataFrame(resumo)
+
+
+def _quantil_normal(confianca: float) -> float:
+    from scipy.stats import norm
+
+    return float(norm.ppf(confianca))

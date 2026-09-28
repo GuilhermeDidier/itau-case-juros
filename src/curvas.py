@@ -8,6 +8,7 @@ Fontes hoje:
   FonteB3        curva completa (269 vértices), mas só ~20 dias úteis de histórico
   FonteCSV       qualquer CSV no formato data x vértice (o da Bloomberg entra aqui)
   FonteDI1AoVivo futuros de DI1 da B3, intradiário com ~15 min de atraso
+  FonteDI1Historico ajustes diários do DI1 desde 2018 (arquivos de pregão da B3)
 
 Achado que custou caro: a API da B3 tem dois endpoints. `Search/GetList`
 ACEITA o parâmetro de data e o IGNORA — devolve sempre a curva mais recente,
@@ -29,7 +30,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from calendario import BASE_252, dias_uteis, proximo_dia_util
+from calendario import BASE_252, dias_uteis, eh_dia_util, proximo_dia_util
 
 RAIZ = Path(__file__).resolve().parent.parent
 CACHE = RAIZ / "data" / "raw"
@@ -436,16 +437,27 @@ class FonteDI1AoVivo:
         du, idx = np.unique(du, return_index=True)
         return Curva(data=data_ref, dias_uteis=du, taxas=taxas[idx], nome=nome, fonte="B3/DI1")
 
+    @staticmethod
+    def pregao(df: pd.DataFrame) -> date:
+        """Dia do pregão a que a cotação se refere.
+
+        Em fim de semana ou feriado a B3 continua servindo o último pregão;
+        rolar para frente dataria a curva de sexta como se fosse segunda, e o
+        "P&L do dia" ganharia um fim de semana de carrego que não aconteceu.
+        """
+        dia = df.attrs["horario"].date()
+        return dia if eh_dia_util(dia) else proximo_dia_util(dia, -1)
+
     def curva_ao_vivo(self, df: pd.DataFrame | None = None) -> Curva:
         """Curva de agora (com o atraso da B3), liquidando hoje."""
         df = self.contratos() if df is None else df
-        hoje = proximo_dia_util(df.attrs["horario"].date())
+        hoje = self.pregao(df)
         return self._montar(df, hoje, "taxa", "DI1 ao vivo")
 
     def curva_fechamento_anterior(self, df: pd.DataFrame | None = None) -> Curva:
         """Curva dos ajustes do pregão anterior — o ponto de partida do P&L do dia."""
         df = self.contratos() if df is None else df
-        hoje = proximo_dia_util(df.attrs["horario"].date())
+        hoje = self.pregao(df)
         ontem = proximo_dia_util(hoje, -1)
         return self._montar(df, ontem, "ajuste_anterior", "DI1 ajuste anterior")
 
@@ -459,6 +471,58 @@ class FonteDI1AoVivo:
         if data_ref != c.data:
             raise ValueError("FonteDI1AoVivo só fornece a curva de hoje.")
         return c
+
+
+class FonteDI1Historico:
+    """Curva diária desde 2018, dos ajustes do DI1 nos arquivos de pregão da B3.
+
+    É a mesma régua da curva ao vivo (`FonteDI1AoVivo`): cada vencimento de
+    DI1 vira um vértice, taxa de ajuste do dia. Dá ao risco o histórico que a
+    curva referencial da B3 não guarda.
+
+    Os dados vêm de `src/baixar_historico_di1.py`.
+
+    Descartado antes deste: montar a curva com os títulos do Tesouro Direto
+    (2004 em diante). As taxas são da manhã, de varejo, com spread fixo, e a
+    variação diária delas correlacionou só ~0,25 com a da B3 nos dias em
+    comum — não serve para medir risco diário.
+    """
+
+    MESES = {c: i for i, c in enumerate("FGHJKMNQUVXZ", start=1)}
+
+    def __init__(self, caminho: Path | None = None):
+        self.caminho = caminho or RAIZ / "data" / "di1_ajustes.csv"
+        self._por_dia: dict[date, pd.DataFrame] | None = None
+        self._curvas: dict[date, Curva] = {}
+
+    @classmethod
+    def vencimento(cls, contrato: str) -> date:
+        """DI1F27 -> primeiro dia útil de janeiro de 2027."""
+        return proximo_dia_util(date(2000 + int(contrato[-2:]), cls.MESES[contrato[3]], 1))
+
+    def _carregar(self) -> dict[date, pd.DataFrame]:
+        if self._por_dia is None:
+            df = pd.read_csv(self.caminho, dtype={"contrato": str})
+            df["data"] = pd.to_datetime(df["data"]).dt.date
+            vencs = {c: self.vencimento(c) for c in df["contrato"].unique()}
+            df["vencimento"] = df["contrato"].map(vencs)
+            df = df.drop_duplicates(["data", "contrato"], keep="last")
+            self._por_dia = {d: g for d, g in df.groupby("data")}
+        return self._por_dia
+
+    def datas_disponiveis(self) -> list[date]:
+        return sorted(self._carregar())
+
+    def curva(self, data_ref: date) -> Curva:
+        if data_ref not in self._curvas:
+            dia = self._carregar().get(data_ref)
+            if dia is None:
+                raise ValueError(f"sem ajuste de DI1 em {data_ref}")
+            df = dia.assign(ajuste=dia["ajuste"].astype(float))
+            self._curvas[data_ref] = FonteDI1AoVivo._montar(
+                df, data_ref, "ajuste", "DI1 ajuste"
+            )
+        return self._curvas[data_ref]
 
 
 def conferir_calendario(data_ref: date, produto: str = "PRE") -> pd.DataFrame:

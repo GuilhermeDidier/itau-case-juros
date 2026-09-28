@@ -181,3 +181,34 @@ def grafico_distribuicao(pl, var: float, es: float, titulo: str) -> go.Figure:
     fig.update_xaxes(title="P&L (R$)")
     fig.update_yaxes(title="cenários")
     return fig
+
+
+def grafico_backtest(serie, coluna_var: str, titulo: str) -> go.Figure:
+    """P&L diário contra o VaR estimado na véspera; exceções destacadas.
+
+    Os pontos cinza são os dias comuns; os vermelhos, os dias em que a perda
+    passou do VaR. Um VaR bem calibrado deixa ~1% dos pontos abaixo da linha.
+    """
+    fig = _base(titulo, altura=360)
+    excecao = serie["PL"] < -serie[coluna_var]
+    comuns, rompidos = serie[~excecao], serie[excecao]
+
+    fig.add_trace(go.Scattergl(
+        x=comuns.index, y=comuns["PL"], mode="markers", name="P&L do dia",
+        marker=dict(color=TINTA_FRACA, size=3, opacity=0.45),
+        hovertemplate="%{x|%d/%m/%Y}<br>R$ %{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=serie.index, y=-serie[coluna_var], mode="lines", name="−VaR 99%",
+        line=dict(color=AZUL, width=1.5),
+        hovertemplate="%{x|%d/%m/%Y}<br>VaR R$ %{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=rompidos.index, y=rompidos["PL"], mode="markers", name="exceção",
+        marker=dict(color=NEGATIVO, size=7),
+        hovertemplate="%{x|%d/%m/%Y}<br>R$ %{y:,.0f}<extra>exceção</extra>",
+    ))
+    fig.update_layout(showlegend=True, legend=dict(
+        orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)"))
+    fig.update_yaxes(title="P&L (R$)")
+    return fig

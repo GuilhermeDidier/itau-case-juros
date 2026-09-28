@@ -22,8 +22,9 @@ from cenarios import (  # noqa: E402
     cenario_historico,
     ranking_por_impacto,
 )
-from curvas import FonteB3, FonteDI1AoVivo  # noqa: E402
+from curvas import FonteDI1AoVivo, FonteDI1Historico  # noqa: E402
 from risco import (  # noqa: E402
+    backtest_var,
     decompor_pca,
     var_historico,
     var_monte_carlo,
@@ -33,6 +34,7 @@ from risco import (  # noqa: E402
 from titulos import Titulo  # noqa: E402
 from visual import (  # noqa: E402
     grafico_aproximacao,
+    grafico_backtest,
     grafico_curva,
     grafico_distribuicao,
     grafico_divergente,
@@ -68,18 +70,22 @@ CARTEIRA_PADRAO = pd.DataFrame(
 
 
 @st.cache_resource
-def fonte_b3() -> FonteB3:
-    return FonteB3("PRE")
+def historico() -> FonteDI1Historico:
+    return FonteDI1Historico()
 
 
 @st.cache_data(ttl=3600)
 def datas_disponiveis() -> list[date]:
-    return sorted(fonte_b3().datas_disponiveis())
+    return historico().datas_disponiveis()
 
 
-@st.cache_data(ttl=3600)
 def curva_em(d: date):
-    return fonte_b3().curva(d)
+    return historico().curva(d)
+
+
+def dia_disponivel(d: date) -> date:
+    """Último pregão do histórico até `d` — o calendário deixa escolher feriado."""
+    return max(x for x in datas_disponiveis() if x <= d)
 
 
 @st.cache_data(ttl=60, show_spinner="Buscando DI1 na B3…")
@@ -92,7 +98,14 @@ def mercado_ao_vivo():
 
 @st.cache_data(ttl=3600)
 def variacoes():
-    return variacoes_historicas(fonte_b3(), VERTICES_PADRAO)
+    return variacoes_historicas(historico(), VERTICES_PADRAO)
+
+
+@st.cache_data(ttl=3600, show_spinner="Varrendo o histórico…")
+def ranking_historico(carteira_df: pd.DataFrame, _curva, horizonte: int, chave: tuple):
+    # `chave` identifica a curva (data, fonte, soma das taxas): a curva ao vivo
+    # muda a cada minuto e o ranking tem que acompanhar.
+    return ranking_por_impacto(montar_carteira(carteira_df), _curva, historico(), janela=horizonte)
 
 
 def montar_carteira(df: pd.DataFrame) -> Carteira:
@@ -126,6 +139,12 @@ with st.sidebar:
     )
 
     st.markdown("### Curva")
+    if not historico().caminho.exists():
+        st.error(
+            "Falta o histórico de ajustes do DI1 (`data/di1_ajustes.csv`). "
+            "Gerar com `./.venv/bin/python src/baixar_historico_di1.py`."
+        )
+        st.stop()
     datas = datas_disponiveis()
     modo = st.radio(
         "marcação", ["Ao vivo (DI1)", "Fechamento histórico"], horizontal=True
@@ -147,14 +166,13 @@ with st.sidebar:
             mercado_ao_vivo.clear()
             st.rerun()
     else:
-        data_ref = st.selectbox(
-            "data de referência",
-            options=list(reversed(datas)),
-            format_func=lambda d: d.strftime("%d/%m/%Y"),
-        )
+        data_ref = dia_disponivel(st.date_input(
+            "data de referência", value=datas[-1], min_value=datas[0],
+            max_value=datas[-1], format="DD/MM/YYYY",
+        ))
     st.caption(
-        f"Histórico (cenários, decomposição, risco): taxas referenciais da B3, "
-        f"{len(datas)} dias úteis ({datas[0]:%d/%m} a {datas[-1]:%d/%m})."
+        f"Histórico (cenários, decomposição, risco): ajustes diários do DI1, "
+        f"{len(datas):,} pregões ({datas[0]:%m/%Y} a {datas[-1]:%d/%m/%Y})."
     )
 
     st.markdown("### Cenários")
@@ -269,7 +287,13 @@ with marcacao:
 with cenarios_tab:
     lista = list(catalogo_nomeado(float(intensidade)).values())
 
-    ranking = ranking_por_impacto(carteira, curva, fonte_b3())
+    horizonte = st.radio(
+        "horizonte dos cenários históricos", [1, 5], horizontal=True,
+        format_func=lambda h: "1 dia" if h == 1 else "5 dias (uma semana de estresse)",
+    )
+    ranking = ranking_historico(
+        editado, curva, horizonte, (curva.data, curva.fonte, float(curva.taxas.sum()))
+    )
     if not ranking.empty:
         pior = ranking.iloc[0]
         lista.append(
@@ -336,12 +360,17 @@ with decomp:
         st.info("Histórico insuficiente para decompor P&L entre duas datas.")
     else:
         col1, col2 = st.columns(2)
-        d0 = col1.selectbox("de", datas[:-1], format_func=lambda d: d.strftime("%d/%m/%Y"))
-        posteriores = [d for d in datas if d > d0]
-        d1 = col2.selectbox(
-            "para", posteriores, index=len(posteriores) - 1,
-            format_func=lambda d: d.strftime("%d/%m/%Y"),
-        )
+        d0 = dia_disponivel(col1.date_input(
+            "de", value=datas[-21], min_value=datas[0], max_value=datas[-2],
+            format="DD/MM/YYYY",
+        ))
+        d1 = dia_disponivel(col2.date_input(
+            "para", value=datas[-1], min_value=datas[1], max_value=datas[-1],
+            format="DD/MM/YYYY",
+        ))
+        if d1 <= d0:
+            st.warning("A data final precisa ser posterior à inicial.")
+            st.stop()
 
         r = carteira.decompor_pl(curva_em(d0), curva_em(d1))
 
@@ -415,6 +444,7 @@ with risco_tab:
     with esq:
         st.dataframe(tabela_risco, use_container_width=True, hide_index=True)
         st.caption(
+            f"{len(var_df):,} variações diárias do DI1 desde {var_df.index[0]:%m/%Y}. "
             "Histórico não assume distribuição. Paramétrico é gaussiano e linear. "
             "Monte Carlo é gaussiano mas reprecifica. A distância entre eles separa "
             "o custo da hipótese de distribuição do custo da linearização."
@@ -425,6 +455,28 @@ with risco_tab:
                 grafico_distribuicao(pl_mc, mc.var, mc.es, "P&L simulado (Monte Carlo)"),
                 use_container_width=True,
             )
+
+    st.markdown("##### O VaR funciona? Backtest")
+    try:
+        serie_bt, resumo_bt = backtest_var(carteira, curva, var_df, confianca, janela=500)
+    except ValueError as erro:
+        st.info(str(erro))
+    else:
+        st.dataframe(resumo_bt, use_container_width=True, hide_index=True)
+        metodo_bt = st.radio(
+            "método", ["histórico", "paramétrico"], horizontal=True, key="metodo_bt"
+        )
+        coluna = "VaR_historico" if metodo_bt == "histórico" else "VaR_parametrico"
+        st.plotly_chart(
+            grafico_backtest(serie_bt, coluna, f"P&L diário × VaR {confianca:.0%} ({metodo_bt})"),
+            use_container_width=True,
+        )
+        st.caption(
+            "Para cada dia, o VaR é estimado só com os 500 pregões anteriores e "
+            "comparado com o P&L que esta carteira teria no movimento real do dia. "
+            "Kupiec testa se a taxa de exceções é compatível com a prometida; o "
+            "semáforo de Basileia olha os últimos 250 dias (verde até 4 exceções)."
+        )
 
     st.markdown("##### Estrutura do movimento da curva (PCA)")
     pca = decompor_pca(var_df)

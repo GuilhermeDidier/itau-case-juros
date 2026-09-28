@@ -4,5 +4,6 @@ __pycache__/
 .DS_Store
 
 # Dados brutos são baixáveis — ver src/baixar_dados.py
-data/raw/
+data/raw/*
+!data/raw/feriados_nacionais.xls
 data/download_di1.log

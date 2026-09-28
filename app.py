@@ -16,6 +16,7 @@ import streamlit as st
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
+from calendario import proximo_dia_util  # noqa: E402
 from carteira import Carteira, VERTICES_PADRAO, hedge_com_di1  # noqa: E402
 from cenarios import (  # noqa: E402
     catalogo_nomeado,
@@ -252,7 +253,7 @@ def tabela(df: pd.DataFrame, **kwargs) -> None:
         df = df.assign(vertice=df["vertice"].map(_prazo))
     config = {c: FORMATOS[c] for c in df.columns if c in FORMATOS}
     config.update(kwargs.pop("column_config", {}))
-    st.dataframe(df, use_container_width=True, hide_index=True, column_config=config, **kwargs)
+    st.dataframe(df, width="stretch", hide_index=True, column_config=config, **kwargs)
 
 # --- barra lateral --------------------------------------------------------
 
@@ -263,7 +264,7 @@ with st.sidebar:
     editado = st.data_editor(
         st.session_state["carteira_base"],
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "tipo": st.column_config.SelectboxColumn(
@@ -278,7 +279,7 @@ with st.sidebar:
         },
         key="carteira",
     )
-    if st.button("restaurar carteira de exemplo", use_container_width=True):
+    if st.button("restaurar carteira de exemplo", width="stretch"):
         st.session_state["carteira_base"] = CARTEIRA_PADRAO
         st.session_state.pop("carteira", None)
         st.rerun()
@@ -312,14 +313,20 @@ with st.sidebar:
                 "Pregão encerrado: a B3 já publicou o ajuste de hoje. O P&L do dia "
                 f"parte da curva oficial de {curva_ajuste.data:%d/%m}."
             )
-        if st.button("atualizar agora", use_container_width=True):
+        if st.button("atualizar agora", width="stretch"):
             mercado_ao_vivo.clear()
             st.rerun()
     else:
-        data_ref = dia_disponivel(st.date_input(
+        pedida = st.date_input(
             "data de referência", value=datas[-1], min_value=datas[0],
             max_value=datas[-1], format="DD/MM/YYYY",
-        ))
+        )
+        data_ref = dia_disponivel(pedida)
+        if (pedida - data_ref).days > 4:  # mais que fim de semana + feriado
+            st.warning(
+                f"Sem pregão no histórico entre {data_ref:%d/%m/%Y} e "
+                f"{pedida:%d/%m/%Y}. Mostrando {data_ref:%d/%m/%Y}."
+            )
     st.caption(
         f"Histórico (cenários, decomposição, risco): ajustes diários do DI1, "
         f"{len(datas):,} pregões ({datas[0]:%m/%Y} a {datas[-1]:%d/%m/%Y})."
@@ -354,8 +361,10 @@ if ao_vivo is not None:
         olho = (f'<span class="ponto"></span><b>Ao vivo</b> · DI1 B3 · '
                 f'cotação {horario:%H:%M} · atraso de ~15 min')
 else:
-    anteriores = [d for d in datas if d < curva.data]
-    curva_base = curva_em(anteriores[-1]) if anteriores else None
+    # Só o pregão IMEDIATAMENTE anterior serve de base: se ele faltar no
+    # histórico, "P&L do dia" contra um pregão mais velho mediria semanas.
+    anterior = proximo_dia_util(curva.data, -1)
+    curva_base = curva_em(anterior) if anterior in set(datas) else None
     rotulo_base = f"fechamento {curva_base.data:%d/%m}" if curva_base else ""
     rotulo_agora = f"fechamento {curva.data:%d/%m}"
     olho = f'<span class="ponto parado"></span><b>Fechamento</b> · DI1 B3 · {curva.data:%d/%m/%Y}'
@@ -371,7 +380,7 @@ with st.container(key="hero"):
         st.plotly_chart(
             grafico_hero(curva_base, curva, rotulo_base, rotulo_agora,
                          [v / 252 for v in ROTULO_VERTICE]),
-            use_container_width=True, config={"displayModeBar": False},
+            width="stretch", config={"displayModeBar": False},
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -422,7 +431,10 @@ if pl_dia is not None:
         + f", desde o {rotulo_base}.",
     )
 else:
-    d.metric("Posições", f"{len(carteira.posicoes)}")
+    d.metric(
+        "P&L do dia", "—",
+        help="Sem o pregão imediatamente anterior no histórico, não há base para o dia.",
+    )
 
 st.write("")
 marcacao, cenarios_tab, decomp, risco_tab = st.tabs(
@@ -457,7 +469,7 @@ with marcacao:
                  "ajuste_anterior", "taxa", "origem", "contratos_negociados"]
             ].assign(variacao_bps=lambda t: (t["taxa"] - t["ajuste_anterior"]) * 100)
             st.dataframe(
-                tabela_di1, use_container_width=True, hide_index=True,
+                tabela_di1, width="stretch", hide_index=True,
                 column_config={
                     "vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
                     "variacao_bps": st.column_config.NumberColumn(format="%+.1f"),
@@ -477,7 +489,7 @@ with marcacao:
             [carteira.dv01_por_vertice(curva)[v] for v in VERTICES_PADRAO],
             "DV01 por vértice (key rate duration)",
         ),
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         "Bump em tenda: o choque vale no vértice e zera nos vizinhos. A soma "
@@ -498,7 +510,7 @@ with marcacao:
             esq, dir_ = st.columns([3, 2])
             with esq:
                 st.dataframe(
-                    ordens, use_container_width=True, hide_index=True,
+                    ordens, width="stretch", hide_index=True,
                     column_config={
                         "vencimento": st.column_config.DateColumn(format="MM/YYYY"),
                         "contratos": st.column_config.NumberColumn(format="%+d"),
@@ -519,7 +531,7 @@ with marcacao:
             with dir_:
                 st.dataframe(
                     efeito.assign(vertice=efeito["vertice"].map(_prazo)),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                     column_config={
                         "vertice": st.column_config.TextColumn("vértice"),
                         "DV01_antes": st.column_config.NumberColumn("DV01 antes", format="%,.0f"),
@@ -564,7 +576,7 @@ with cenarios_tab:
     with dir_:
         st.plotly_chart(
             grafico_divergente(list(tabela_cen["cenario"]), list(tabela_cen["PL"]), "P&L por cenário"),
-            use_container_width=True,
+            width="stretch",
         )
     st.caption(
         "P&L por reprecificação completa, não por DV01. A coluna erro do DV01 mostra "
@@ -582,7 +594,7 @@ with cenarios_tab:
     cen = next(c for c in lista if c.nome == escolhido)
     st.plotly_chart(
         grafico_curva(curva, cen(curva), rotulo_comparacao=escolhido),
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(cen.descricao)
 
@@ -655,7 +667,7 @@ with decomp:
     choques = np.array([-300, -200, -150, -100, -50, -25, -10, 10, 25, 50, 100, 150, 200, 300])
     st.plotly_chart(
         grafico_aproximacao(carteira.aproximar_vs_reprecificar(curva, choques)),
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         "A reta do DV01 descola da verdade conforme o choque cresce, e sempre "
@@ -705,7 +717,7 @@ with risco_tab:
         if len(pl_mc):
             st.plotly_chart(
                 grafico_distribuicao(pl_mc, mc.var, mc.es, "P&L simulado (Monte Carlo)"),
-                use_container_width=True,
+                width="stretch",
             )
 
     st.markdown("##### O VaR funciona? Backtest")
@@ -721,7 +733,7 @@ with risco_tab:
         coluna = "VaR_historico" if metodo_bt == "histórico" else "VaR_parametrico"
         st.plotly_chart(
             grafico_backtest(serie_bt, coluna, f"P&L diário × VaR {confianca:.0%} ({metodo_bt})"),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption(
             "Para cada dia, o VaR é estimado só com os 500 pregões anteriores e "
@@ -737,7 +749,7 @@ with risco_tab:
     else:
         pca_tela = pca.rename(columns={f"{v}du": ROTULO_VERTICE[v] for v in VERTICES_PADRAO})
         st.dataframe(
-            pca_tela, use_container_width=True,
+            pca_tela, width="stretch",
             column_config={
                 "variancia_explicada_%": st.column_config.NumberColumn("variância explicada %", format="%.1f"),
                 "acumulada_%": st.column_config.NumberColumn("acumulada %", format="%.1f"),

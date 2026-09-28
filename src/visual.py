@@ -254,12 +254,12 @@ def grafico_backtest(serie, coluna_var: str, titulo: str) -> go.Figure:
     comuns, rompidos = serie[~excecao], serie[excecao]
 
     fig.add_trace(go.Scattergl(
-        x=comuns.index, y=comuns["PL"], mode="markers", name="P&L do dia",
+        x=comuns.index, y=comuns["PL"], mode="markers", name="P&L",
         marker=dict(color=TINTA_FRACA, size=3, opacity=0.45),
         hovertemplate="%{x|%d/%m/%Y}<br>R$ %{y:,.0f}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=serie.index, y=-serie[coluna_var], mode="lines", name="−VaR 99%",
+        x=serie.index, y=-serie[coluna_var], mode="lines", name="−VaR",
         line=dict(color=AZUL, width=1.5),
         hovertemplate="%{x|%d/%m/%Y}<br>VaR R$ %{y:,.0f}<extra></extra>",
     ))

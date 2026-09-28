@@ -7,6 +7,7 @@ configuração, não reescrita.
 Fontes hoje:
   FonteB3        curva completa (269 vértices), mas só ~20 dias úteis de histórico
   FonteCSV       qualquer CSV no formato data x vértice (o da Bloomberg entra aqui)
+  FonteDI1AoVivo futuros de DI1 da B3, intradiário com ~15 min de atraso
 
 Achado que custou caro: a API da B3 tem dois endpoints. `Search/GetList`
 ACEITA o parâmetro de data e o IGNORA — devolve sempre a curva mais recente,
@@ -28,7 +29,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from calendario import BASE_252, dias_uteis
+from calendario import BASE_252, dias_uteis, proximo_dia_util
 
 RAIZ = Path(__file__).resolve().parent.parent
 CACHE = RAIZ / "data" / "raw"
@@ -356,6 +357,108 @@ class FonteCSV:
             nome=self.nome,
             fonte=f"CSV/{self.caminho.name}",
         )
+
+
+class FonteDI1AoVivo:
+    """Curva intradiária montada a partir dos futuros de DI1 da B3.
+
+    Cotação pública, sem cadastro, com o atraso de ~15 min que a B3 aplica
+    ao dado gratuito. Cada vencimento negociado vira um vértice: a taxa do
+    contrato já é anual, base 252 — a mesma convenção de `Curva`.
+
+    Taxa de cada vértice, em ordem de preferência:
+      meio     média de compra e venda — o que o mercado aceita AGORA
+      último   último negócio, quando falta um dos lados do livro
+      ajuste   ajuste do pregão anterior, quando o contrato não negociou
+
+    Não uso o último negócio como primeira opção porque, nos vencimentos
+    ilíquidos, ele pode ter horas: em 28/09 o DI1Z28 tinha 5 negócios no dia
+    e último a 13,915% com o livro em 13,870/13,880. O meio segue a curva;
+    o último congela o vértice num preço velho.
+    """
+
+    URL = "https://cotacao.b3.com.br/mds/api/v1/DerivativeQuotation/DI1"
+
+    def __init__(self, timeout: int = 20):
+        self.timeout = timeout
+
+    def contratos(self) -> pd.DataFrame:
+        """Um contrato por linha, com a taxa escolhida e de onde ela veio."""
+        resp = requests.get(self.URL, headers={"User-Agent": _UA}, timeout=self.timeout)
+        resp.raise_for_status()
+        corpo = resp.json()
+        if corpo.get("BizSts", {}).get("cd") != "OK":
+            raise ValueError(f"B3 respondeu {corpo.get('BizSts')}")
+
+        horario = pd.Timestamp(corpo["Msg"]["dtTm"])
+        linhas = []
+        for s in corpo.get("Scty", []):
+            resumo = s.get("asset", {}).get("AsstSummry", {})
+            venc = resumo.get("mtrtyCode", "")
+            if not venc or venc.startswith("9999"):  # DI1D: o próprio DI, não um vencimento
+                continue
+            q = s.get("SctyQtn", {})
+            compra = s.get("buyOffer", {}).get("price")
+            venda = s.get("sellOffer", {}).get("price")
+            linhas.append(
+                {
+                    "contrato": s["symb"],
+                    "vencimento": date.fromisoformat(venc),
+                    "compra": compra,
+                    "venda": venda,
+                    "ultimo": q.get("curPrc"),
+                    "ajuste_anterior": q.get("prvsDayAdjstmntPric"),
+                    "contratos_negociados": resumo.get("traddCtrctsQty") or 0,
+                    "contratos_em_aberto": resumo.get("opnCtrcts") or 0,
+                }
+            )
+
+        df = pd.DataFrame(linhas).sort_values("vencimento").reset_index(drop=True)
+        tem_livro = df["compra"].notna() & df["venda"].notna()
+        df["taxa"] = np.where(
+            tem_livro,
+            (df["compra"] + df["venda"]) / 2,
+            df["ultimo"].fillna(df["ajuste_anterior"]),
+        )
+        df["origem"] = np.select(
+            [tem_livro, df["ultimo"].notna()], ["meio", "último"], default="ajuste"
+        )
+        df.attrs["horario"] = horario
+        return df.dropna(subset=["taxa"])
+
+    @staticmethod
+    def _montar(df: pd.DataFrame, data_ref: date, coluna: str, nome: str) -> Curva:
+        du = np.array([dias_uteis(data_ref, v) for v in df["vencimento"]])
+        taxas = df[coluna].to_numpy(dtype=float) / 100.0
+        validos = (du > 0) & ~np.isnan(taxas)
+        du, taxas = du[validos], taxas[validos]
+        # Dois vencimentos no mesmo dia útil (feriado no dia 1º) viram um vértice.
+        du, idx = np.unique(du, return_index=True)
+        return Curva(data=data_ref, dias_uteis=du, taxas=taxas[idx], nome=nome, fonte="B3/DI1")
+
+    def curva_ao_vivo(self, df: pd.DataFrame | None = None) -> Curva:
+        """Curva de agora (com o atraso da B3), liquidando hoje."""
+        df = self.contratos() if df is None else df
+        hoje = proximo_dia_util(df.attrs["horario"].date())
+        return self._montar(df, hoje, "taxa", "DI1 ao vivo")
+
+    def curva_fechamento_anterior(self, df: pd.DataFrame | None = None) -> Curva:
+        """Curva dos ajustes do pregão anterior — o ponto de partida do P&L do dia."""
+        df = self.contratos() if df is None else df
+        hoje = proximo_dia_util(df.attrs["horario"].date())
+        ontem = proximo_dia_util(hoje, -1)
+        return self._montar(df, ontem, "ajuste_anterior", "DI1 ajuste anterior")
+
+    # Protocolo FonteCurva: a fonte ao vivo só conhece o dia de hoje.
+    def datas_disponiveis(self) -> list[date]:
+        c = self.curva_ao_vivo()
+        return [c.data]
+
+    def curva(self, data_ref: date) -> Curva:
+        c = self.curva_ao_vivo()
+        if data_ref != c.data:
+            raise ValueError("FonteDI1AoVivo só fornece a curva de hoje.")
+        return c
 
 
 def conferir_calendario(data_ref: date, produto: str = "PRE") -> pd.DataFrame:

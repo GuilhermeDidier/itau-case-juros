@@ -9,6 +9,7 @@ sobre uma carteira de renda fixa brasileira.
 |---|---|
 | Calendário 252 dias úteis | pronto, conferido contra a B3 |
 | Curva de juros (fonte plugável) | pronto |
+| Curva ao vivo (futuros de DI1, ~15 min de atraso) | pronto, conferida contra a curva oficial da B3 |
 | Apreçamento LTN / NTN-F | pronto, conferido contra o Tesouro Nacional |
 | DV01, convexidade, key rate duration | pronto |
 | Cenários nomeados e históricos | pronto, cada um testado contra a própria definição |
@@ -48,6 +49,13 @@ partir da taxa publicada e bate ao centavo em 55 de 83 observações, LTN e
 NTN-F, ao longo de 19 anos.
 
 As 28 restantes caem na janela 2015–2021, descrita abaixo.
+
+**Curva ao vivo contra a curva oficial.** A marcação usa os futuros de DI1
+da cotação pública da B3 (`FonteDI1AoVivo`), com o atraso de ~15 min do dado
+gratuito. A curva referencial PRE é construída a partir dos ajustes do DI1,
+então a curva montada com o ajuste do pregão anterior tem que reproduzi-la:
+bate nos 45 vencimentos, com diferença máxima de 0,6bp — arredondamento do
+ajuste, que vem com 3 casas. (`tests/testar_di1_ao_vivo.py`)
 
 ## O que foi medido, e não suposto
 

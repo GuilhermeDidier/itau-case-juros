@@ -48,7 +48,9 @@ def _base(titulo: str = "", altura: int = 340) -> go.Figure:
     return fig
 
 
-def grafico_curva(curva, comparacao=None, rotulo_comparacao: str = "cenário") -> go.Figure:
+def grafico_curva(
+    curva, comparacao=None, rotulo_comparacao: str = "cenário", rotulo_base: str = "hoje"
+) -> go.Figure:
     """Curva de juros por prazo. Duas séries no máximo: base e cenário."""
     fig = _base("Curva DI × pré")
     du = curva.dias_uteis
@@ -56,9 +58,10 @@ def grafico_curva(curva, comparacao=None, rotulo_comparacao: str = "cenário") -
 
     fig.add_trace(
         go.Scatter(
-            x=anos, y=curva.taxas * 100, mode="lines", name="hoje",
+            x=anos, y=curva.taxas * 100, mode="lines", name=rotulo_base,
             line=dict(color=AZUL, width=2),
-            hovertemplate="%{x:.2f} anos<br>%{y:.3f}%<extra>hoje</extra>",
+            hovertemplate="%{x:.2f} anos<br>%{y:.3f}%"
+                          f"<extra>{rotulo_base}</extra>",
         )
     )
     if comparacao is not None:

@@ -22,7 +22,7 @@ from cenarios import (  # noqa: E402
     cenario_historico,
     ranking_por_impacto,
 )
-from curvas import FonteB3  # noqa: E402
+from curvas import FonteB3, FonteDI1AoVivo  # noqa: E402
 from risco import (  # noqa: E402
     decompor_pca,
     var_historico,
@@ -82,6 +82,14 @@ def curva_em(d: date):
     return fonte_b3().curva(d)
 
 
+@st.cache_data(ttl=60, show_spinner="Buscando DI1 na B3…")
+def mercado_ao_vivo():
+    """Contratos, curva de agora e curva do ajuste anterior — num só pedido à B3."""
+    fonte = FonteDI1AoVivo()
+    df = fonte.contratos()
+    return df, df.attrs["horario"], fonte.curva_ao_vivo(df), fonte.curva_fechamento_anterior(df)
+
+
 @st.cache_data(ttl=3600)
 def variacoes():
     return variacoes_historicas(fonte_b3(), VERTICES_PADRAO)
@@ -119,20 +127,40 @@ with st.sidebar:
 
     st.markdown("### Curva")
     datas = datas_disponiveis()
-    data_ref = st.selectbox(
-        "data de referência",
-        options=list(reversed(datas)),
-        format_func=lambda d: d.strftime("%d/%m/%Y"),
+    modo = st.radio(
+        "marcação", ["Ao vivo (DI1)", "Fechamento histórico"], horizontal=True
     )
+    ao_vivo = None
+    if modo == "Ao vivo (DI1)":
+        try:
+            ao_vivo = mercado_ao_vivo()
+        except Exception as erro:  # rede, B3 fora do ar, formato mudou
+            st.error(f"Cotação da B3 indisponível ({erro}). Usando o último fechamento.")
+    if ao_vivo is not None:
+        contratos, horario, curva_viva, curva_ajuste = ao_vivo
+        st.caption(
+            f"Futuros de DI1 da B3, {len(curva_viva.dias_uteis)} vencimentos. "
+            f"Cotação de {horario:%d/%m %H:%M}, com o atraso de ~15 min do dado "
+            f"público. Atualiza a cada 60 s."
+        )
+        if st.button("atualizar agora", use_container_width=True):
+            mercado_ao_vivo.clear()
+            st.rerun()
+    else:
+        data_ref = st.selectbox(
+            "data de referência",
+            options=list(reversed(datas)),
+            format_func=lambda d: d.strftime("%d/%m/%Y"),
+        )
     st.caption(
-        f"Fonte: B3, taxas referenciais. Histórico disponível: {len(datas)} dias "
-        f"úteis ({datas[0]:%d/%m} a {datas[-1]:%d/%m})."
+        f"Histórico (cenários, decomposição, risco): taxas referenciais da B3, "
+        f"{len(datas)} dias úteis ({datas[0]:%d/%m} a {datas[-1]:%d/%m})."
     )
 
     st.markdown("### Cenários")
     intensidade = st.slider("intensidade (bps)", 10, 200, 50, step=5)
 
-curva = curva_em(data_ref)
+curva = curva_viva if ao_vivo is not None else curva_em(data_ref)
 carteira = montar_carteira(editado)
 
 if not carteira.posicoes:
@@ -151,7 +179,16 @@ a, b, c, d = st.columns(4)
 a.metric("Valor da carteira", f"R$ {valor:,.0f}")
 b.metric("DV01", f"R$ {dv01:,.0f}", help="Variação de valor por 1bp de choque paralelo")
 c.metric("Duration média", f"{np.average(resumo['duration'], weights=resumo['valor'].abs()):.2f} anos")
-d.metric("Posições", f"{len(carteira.posicoes)}")
+if ao_vivo is not None:
+    pl_dia = carteira.decompor_pl(curva_ajuste, curva_viva)
+    d.metric(
+        "P&L do dia",
+        f"R$ {pl_dia['total']:,.0f}",
+        help=f"Do ajuste de {curva_ajuste.data:%d/%m} até a cotação de {horario:%H:%M}. "
+        "Detalhe na aba Decomposição de P&L.",
+    )
+else:
+    d.metric("Posições", f"{len(carteira.posicoes)}")
 
 marcacao, cenarios_tab, decomp, risco_tab = st.tabs(
     ["Marcação", "Cenários", "Decomposição de P&L", "Risco"]
@@ -181,7 +218,37 @@ with marcacao:
             "O apreçador reproduz os PUs oficiais do Tesouro Nacional ao centavo."
         )
     with dir_:
-        st.plotly_chart(grafico_curva(curva), use_container_width=True)
+        if ao_vivo is not None:
+            st.plotly_chart(
+                grafico_curva(
+                    curva_ajuste, curva_viva, rotulo_comparacao="agora",
+                    rotulo_base=f"ajuste {curva_ajuste.data:%d/%m}",
+                ),
+                use_container_width=True,
+            )
+        else:
+            st.plotly_chart(grafico_curva(curva), use_container_width=True)
+
+    if ao_vivo is not None:
+        with st.expander(f"Contratos de DI1 usados na curva ({len(contratos)})"):
+            tabela_di1 = contratos[
+                ["contrato", "vencimento", "compra", "venda", "ultimo",
+                 "ajuste_anterior", "taxa", "origem", "contratos_negociados"]
+            ].assign(variacao_bps=lambda t: (t["taxa"] - t["ajuste_anterior"]) * 100)
+            st.dataframe(
+                tabela_di1, use_container_width=True, hide_index=True,
+                column_config={
+                    "vencimento": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "variacao_bps": st.column_config.NumberColumn(format="%+.1f"),
+                    "contratos_negociados": st.column_config.NumberColumn(format="%,d"),
+                },
+            )
+            st.caption(
+                "Taxa do vértice = meio entre compra e venda. Sem livro dos dois "
+                "lados, último negócio; sem negócio no dia, ajuste anterior. O "
+                "último negócio de um vencimento ilíquido pode ter horas — o meio "
+                "acompanha a curva, o último congela o vértice num preço velho."
+            )
 
     st.plotly_chart(
         grafico_divergente(
@@ -246,6 +313,25 @@ with cenarios_tab:
 # --- decomposição ---------------------------------------------------------
 
 with decomp:
+    if ao_vivo is not None:
+        st.markdown(f"##### Hoje: ajuste de {curva_ajuste.data:%d/%m} → cotação das {horario:%H:%M}")
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("Carrego", f"R$ {pl_dia['carrego']:,.0f}")
+        h2.metric("Efeito de taxa", f"R$ {pl_dia['efeito_taxa']:,.0f}")
+        h3.metric("Caixa recebido", f"R$ {pl_dia['caixa_recebido']:,.0f}")
+        h4.metric("Total", f"R$ {pl_dia['total']:,.0f}")
+        esq, dir_ = st.columns([3, 2])
+        with esq:
+            st.dataframe(pl_dia["por_vertice"], use_container_width=True, hide_index=True)
+        with dir_:
+            st.dataframe(pl_dia["por_papel"], use_container_width=True, hide_index=True)
+        st.caption(
+            "Mesma decomposição do histórico, aplicada ao pregão em andamento: "
+            "o ponto de partida é o ajuste de ontem, que é onde a mesa foi marcada."
+        )
+        st.divider()
+        st.markdown("##### Entre dois fechamentos")
+
     if len(datas) < 2:
         st.info("Histórico insuficiente para decompor P&L entre duas datas.")
     else:
@@ -353,10 +439,17 @@ with risco_tab:
             "a matriz de covariância está descrevendo mercado e não ruído."
         )
 
+rodape_curva = (
+    f"Curva dos futuros de DI1 da B3, cotação de {horario:%d/%m/%Y %H:%M}, "
+    f"{len(curva.dias_uteis)} vencimentos; conferida contra a curva oficial da B3 "
+    f"pelo ajuste do pregão anterior."
+    if ao_vivo is not None
+    else f"Curva DI×pré da B3 em {curva.data:%d/%m/%Y}, {len(curva.dias_uteis)} vértices."
+)
 st.divider()
 st.markdown(
     f"""<div class="rodape">
-    Curva DI×pré da B3 em {curva.data:%d/%m/%Y}, {len(curva.dias_uteis)} vértices.
+    {rodape_curva}
     Calendário de dias úteis conferido contra os 269 vértices publicados pela B3:
     divergência zero. Apreçamento conferido contra os PUs oficiais do Tesouro
     Nacional: reconstrói ao centavo em 19 anos de dados.

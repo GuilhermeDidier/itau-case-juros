@@ -69,14 +69,32 @@ CARTEIRA_PADRAO = pd.DataFrame(
 )
 
 
+ARQUIVO_HISTORICO = RAIZ / "data" / "di1_ajustes.csv"
+
+
+def _versao_historico() -> float:
+    """Muda quando o arquivo muda. Entra na chave dos caches: sem isso o
+    servidor continua servindo o histórico da primeira carga mesmo depois
+    de um arquivo novo ser publicado (visto no Streamlit Cloud em 28/09)."""
+    return ARQUIVO_HISTORICO.stat().st_mtime if ARQUIVO_HISTORICO.exists() else 0.0
+
+
 @st.cache_resource
+def _historico(versao: float) -> FonteDI1Historico:
+    return FonteDI1Historico(ARQUIVO_HISTORICO)
+
+
 def historico() -> FonteDI1Historico:
-    return FonteDI1Historico()
+    return _historico(_versao_historico())
 
 
 @st.cache_data(ttl=3600)
-def datas_disponiveis() -> list[date]:
+def _datas(versao: float) -> list[date]:
     return historico().datas_disponiveis()
+
+
+def datas_disponiveis() -> list[date]:
+    return _datas(_versao_historico())
 
 
 def curva_em(d: date):
@@ -97,8 +115,12 @@ def mercado_ao_vivo():
 
 
 @st.cache_data(ttl=3600)
-def variacoes():
+def _variacoes(versao: float):
     return variacoes_historicas(historico(), VERTICES_PADRAO)
+
+
+def variacoes():
+    return _variacoes(_versao_historico())
 
 
 @st.cache_data(ttl=3600, show_spinner="Varrendo o histórico…")
@@ -383,7 +405,7 @@ with cenarios_tab:
         format_func=lambda h: "1 dia" if h == 1 else "5 dias (uma semana de estresse)",
     )
     ranking = ranking_historico(
-        editado, curva, horizonte, (curva.data, curva.fonte, float(curva.taxas.sum()))
+        editado, curva, horizonte, (curva.data, curva.fonte, float(curva.taxas.sum()), _versao_historico())
     )
     if not ranking.empty:
         pior = ranking.iloc[0]

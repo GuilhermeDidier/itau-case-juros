@@ -16,6 +16,25 @@ import streamlit as st
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
+
+def _recarregar_modulos_alterados() -> None:
+    """O Streamlit reexecuta este arquivo a cada deploy, mas os módulos de
+    src/ ficam na memória do processo: no Streamlit Cloud, em 28/09, um
+    deploy novo quebrou com ImportError porque `visual` ainda era a versão
+    antiga. Recarrega (na ordem das dependências) quem mudou no disco."""
+    import importlib
+
+    vistos = getattr(sys, "_simulador_mtimes", {})
+    for nome in ("calendario", "curvas", "titulos", "carteira", "cenarios", "risco", "visual"):
+        mtime = (RAIZ / "src" / f"{nome}.py").stat().st_mtime
+        if nome in sys.modules and vistos.get(nome) != mtime:
+            importlib.reload(sys.modules[nome])
+        vistos[nome] = mtime
+    sys._simulador_mtimes = vistos
+
+
+_recarregar_modulos_alterados()
+
 from calendario import dias_uteis, proximo_dia_util  # noqa: E402
 from carteira import Carteira, VERTICES_PADRAO, hedge_com_di1  # noqa: E402
 from cenarios import (  # noqa: E402

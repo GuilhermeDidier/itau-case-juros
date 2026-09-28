@@ -1,12 +1,11 @@
 """Verifica as propriedades que os números de risco têm que respeitar.
 
-Com a amostra atual nenhum VaR aqui é utilizável como limite de risco — e é
-justamente por isso que o teste checa ESTRUTURA, não valor. Um VaR de R$ 71
-mil não pode ser validado contra nada hoje; mas ES ≥ VaR, monotonicidade na
-confiança e reprodutibilidade sob semente têm que valer em qualquer amostra.
+Checa ESTRUTURA, não valor: ES ≥ VaR, monotonicidade na confiança,
+reprodutibilidade sob semente e a PCA canônica valem em qualquer amostra. Se o
+número está calibrado é o que o backtest do VaR responde, no app.
 
-Quando o histórico longo chegar, estes testes continuam valendo e passam a
-sustentar números que significam alguma coisa.
+Também confere a honestidade sobre a amostra: um recorte curto tem que se
+declarar ilustrativo, e o histórico inteiro do DI1 não.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "src"))
 
 from carteira import Carteira, VERTICES_PADRAO  # noqa: E402
-from curvas import FonteB3  # noqa: E402
+from curvas import FonteDI1Historico  # noqa: E402
 from risco import (  # noqa: E402
     MINIMO_CONFIAVEL,
     decompor_pca,
@@ -34,8 +33,8 @@ from titulos import Titulo  # noqa: E402
 
 
 def montar():
-    fonte = FonteB3("PRE")
-    curva = fonte.curva(sorted(fonte.datas_disponiveis())[-1])
+    fonte = FonteDI1Historico()
+    curva = fonte.curva(fonte.datas_disponiveis()[-1])
     carteira = (
         Carteira("book")
         .adicionar(Titulo.ltn(date(2028, 1, 1)), 50_000)
@@ -88,14 +87,18 @@ def main() -> int:
     checa("Monte Carlo reprodutível sob semente", abs(mc_a.var - mc_b.var) < 1e-9)
 
     print("\nHonestidade sobre a amostra:")
+    curta = variacoes.iloc[-20:]
+    h_c, _ = var_historico(carteira, curva, curta)
+    p_c = var_parametrico(carteira, curva, curta)
     checa(
-        "amostra curta dispara aviso em todos os métodos",
-        all(r.aviso for r in (hist, par, mc)) and n < MINIMO_CONFIAVEL,
-        f"n={n} < {MINIMO_CONFIAVEL}",
+        "recorte de 20 dias se declara ilustrativo",
+        bool(h_c.aviso) and bool(p_c.aviso),
+        f"n={len(curta)} < {MINIMO_CONFIAVEL}",
     )
     checa(
-        "resultado se declara não confiável",
-        not any(r.confiavel for r in (hist, par, mc)),
+        "histórico inteiro não dispara aviso",
+        n >= MINIMO_CONFIAVEL and hist.confiavel and par.confiavel,
+        f"n={n}",
     )
 
     print("\nEstrutura da curva (PCA):")
@@ -121,7 +124,7 @@ def main() -> int:
 
     print()
     if all(ok):
-        print("APROVADO — as propriedades valem; os valores ainda não significam nada")
+        print("APROVADO — as propriedades valem")
         return 0
     print("REPROVADO")
     return 1

@@ -688,8 +688,7 @@ with risco_tab:
 
     if hist.aviso:
         st.error(
-            f"**Amostra insuficiente — os números abaixo são ilustrativos.** {hist.aviso} "
-            "Com histórico longo de curva, os mesmos cálculos passam a ser utilizáveis."
+            f"**Amostra insuficiente — os números abaixo são ilustrativos.** {hist.aviso}"
         )
 
     tabela_risco = pd.DataFrame(

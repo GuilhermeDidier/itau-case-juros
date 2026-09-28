@@ -1,14 +1,13 @@
 """Fontes de curva de juros, atrás de uma interface única.
 
-A escolha de arquitetura é deliberada: o resto do projeto só conhece
-`Curva` e `FonteCurva`. Trocar B3 por um CSV exportado da Bloomberg é
-configuração, não reescrita.
+O resto do projeto só conhece `Curva` e `FonteCurva`; de onde a curva vem é
+detalhe de cada fonte. Todas são públicas e oficiais da B3.
 
-Fontes hoje:
-  FonteB3        curva completa (269 vértices), mas só ~20 dias úteis de histórico
-  FonteCSV       qualquer CSV no formato data x vértice (o da Bloomberg entra aqui)
-  FonteDI1AoVivo futuros de DI1 da B3, intradiário com ~15 min de atraso
-  FonteDI1Historico ajustes diários do DI1 desde 2018 (arquivos de pregão da B3)
+Fontes:
+  FonteDI1AoVivo    futuros de DI1, intradiário com ~15 min de atraso — a marcação
+  FonteDI1Historico ajustes diários do DI1 desde 2018 (arquivos de pregão) — o risco
+  FonteB3           curva referencial PRE oficial, só ~20 dias úteis — a régua que
+                    confere as outras duas
 
 Achado que custou caro: a API da B3 tem dois endpoints. `Search/GetList`
 ACEITA o parâmetro de data e o IGNORA — devolve sempre a curva mais recente,
@@ -254,110 +253,6 @@ class FonteB3:
         df = pd.read_csv(destino, sep=";", decimal=",")
         df.columns = [c.strip() for c in df.columns]
         return df.rename(columns={"Dias Úteis": "du", "Dias Corridos": "dc"})[["du", "dc"]]
-
-
-class FonteCSV:
-    """CSV no formato: uma linha por data, uma coluna por vértice.
-
-    É o formato pedido na extração da Bloomberg. O cabeçalho das colunas de
-    vértice pode vir em dias úteis (252, 504) ou em rótulo de mercado
-    (1M, 6M, 1A, 2A, 5A, 10A) — os dois são aceitos.
-    """
-
-    ROTULOS = {
-        "1M": 21, "2M": 42, "3M": 63, "6M": 126, "9M": 189,
-        "1A": 252, "1Y": 252, "2A": 504, "2Y": 504, "3A": 756, "3Y": 756,
-        "4A": 1008, "4Y": 1008, "5A": 1260, "5Y": 1260,
-        "7A": 1764, "7Y": 1764, "10A": 2520, "10Y": 2520,
-    }
-
-    def __init__(self, caminho: str | Path, coluna_data: str = "data",
-                 taxas_em_percent: bool = True, nome: str = "DI x pré"):
-        self.caminho = Path(caminho)
-        self.coluna_data = coluna_data
-        self.taxas_em_percent = taxas_em_percent
-        self.nome = nome
-        self._df: pd.DataFrame | None = None
-
-    @staticmethod
-    def _ler(caminho: Path) -> pd.DataFrame:
-        """Lê o CSV sem assumir dialeto.
-
-        Export de Excel em locale pt-BR sai com ponto-e-vírgula e vírgula
-        decimal; em locale en-US sai com vírgula e ponto. O arquivo vem de um
-        terminal em instituição brasileira, então os dois são plausíveis e
-        adivinhar errado produz uma curva de números absurdos em silêncio.
-        """
-        cabecalho = caminho.read_text(encoding="utf-8-sig", errors="replace").splitlines()[0]
-        separador = max((";", ",", "\t"), key=cabecalho.count)
-        decimal = "," if separador == ";" else "."
-        return pd.read_csv(
-            caminho, sep=separador, decimal=decimal, encoding="utf-8-sig"
-        )
-
-    @staticmethod
-    def _datas(serie: pd.Series) -> pd.Series:
-        """ISO primeiro, dd/mm depois — sem deixar o pandas adivinhar."""
-        iso = pd.to_datetime(serie, format="%Y-%m-%d", errors="coerce")
-        if iso.notna().all():
-            return iso
-        return pd.to_datetime(serie, dayfirst=True, errors="coerce")
-
-    def _carregar(self) -> pd.DataFrame:
-        if self._df is not None:
-            return self._df
-
-        df = self._ler(self.caminho)
-        df.columns = [str(c).strip() for c in df.columns]
-        col = self.coluna_data if self.coluna_data in df.columns else df.columns[0]
-        df[col] = self._datas(df[col])
-        df = df.dropna(subset=[col]).set_index(col).sort_index()
-
-        vertices = {}
-        for c in df.columns:
-            chave = str(c).strip().upper()
-            if chave in self.ROTULOS:
-                vertices[c] = self.ROTULOS[chave]
-            else:
-                try:
-                    vertices[c] = int(float(chave))
-                except ValueError:
-                    continue
-        if not vertices:
-            raise ValueError(
-                f"Nenhuma coluna de vértice reconhecida em {self.caminho.name}. "
-                f"Use dias úteis (252, 504) ou rótulos (1A, 2A, 5A)."
-            )
-
-        df = df[list(vertices)].rename(columns=vertices)
-        df = df.reindex(sorted(df.columns), axis=1).astype(float)
-        self._df = df
-        return df
-
-    def datas_disponiveis(self) -> list[date]:
-        return [d.date() for d in self._carregar().index]
-
-    def curva(self, data_ref: date) -> Curva:
-        df = self._carregar()
-        alvo = pd.Timestamp(data_ref)
-        if alvo not in df.index:
-            anteriores = df.index[df.index <= alvo]
-            if len(anteriores) == 0:
-                raise ValueError(f"CSV não cobre {data_ref} nem datas anteriores.")
-            alvo = anteriores[-1]
-
-        linha = df.loc[alvo].dropna()
-        taxas = linha.to_numpy(dtype=float)
-        if self.taxas_em_percent:
-            taxas = taxas / 100.0
-
-        return Curva(
-            data=alvo.date(),
-            dias_uteis=np.array(linha.index, dtype=int),
-            taxas=taxas,
-            nome=self.nome,
-            fonte=f"CSV/{self.caminho.name}",
-        )
 
 
 class FonteDI1AoVivo:

@@ -10,10 +10,8 @@ informativo.
 
   paramétrico  delta-normal: DV01 por vértice contra a matriz de covariância.
                Rápido e analítico. A literatura espera que subestime cauda,
-               porque a curva de juros tem cauda mais gorda que a normal.
-               ATENÇÃO: com a amostra atual isso NÃO está demonstrado — e o
-               observado é o contrário. Ver nota sobre tamanho de amostra
-               abaixo.
+               porque a curva de juros tem cauda mais gorda que a normal — e
+               o backtest (`backtest_var`) é o que mostra se isso acontece.
 
   Monte Carlo  amostra da normal multivariada e reprecifica de verdade. Herda
                a hipótese gaussiana do paramétrico, mas captura a não
@@ -23,14 +21,9 @@ Um VaR sem o tamanho da amostra ao lado é um número sem sentido. Toda saída
 aqui carrega `n_observacoes` e um aviso explícito quando a amostra é curta
 demais para a cauda que se está estimando.
 
-NOTA SOBRE A AMOSTRA ATUAL
-Com os ~19 movimentos que a B3 disponibiliza, o quantil de 99% se apoia em
-0,2 observação: o "VaR histórico" é, na prática, o pior dia da amostra, e a
-distribuição não tem cauda para ser vista. Medido hoje, o paramétrico sai
-MAIOR que o histórico — o oposto do esperado na literatura. Isso não é
-evidência contra a cauda gorda; é evidência de que 19 pontos não estimam
-cauda nenhuma. A comparação entre os três métodos só passa a significar
-alguma coisa com o histórico longo da extração externa.
+A amostra vem dos ajustes diários do DI1 desde 2018 (`FonteDI1Historico`).
+Com só os ~20 dias da curva referencial da B3, o quantil de 99% se apoiaria
+em 0,2 observação — o "VaR" seria o pior dia, sem cauda nenhuma para ver.
 """
 
 from __future__ import annotations

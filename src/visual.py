@@ -22,28 +22,48 @@ AZUL, LARANJA, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
 # Par divergente: polos quente/frio com neutro no meio.
 POSITIVO, NEGATIVO, NEUTRO = "#2a78d6", "#e34948", "#f0efec"
 
-SUPERFICIE = "#fcfcfb"
-PLANO = "#f9f9f7"
-TINTA = "#0b0b0b"
-TINTA_FRACA = "#52514e"
-GRADE = "#e6e5e1"
+# Papel e tinta — mesmos tokens de .streamlit/config.toml.
+SUPERFICIE = "#FFFFFF"
+PLANO = "#ECEFF1"
+TINTA = "#0E1C27"
+TINTA_FRACA = "#5B6873"
+GRADE = "#E6EAED"
 
-FONTE = "ui-monospace, SFMono-Regular, Menlo, monospace"
+FONTE = "Instrument Sans, system-ui, sans-serif"
+FONTE_NUM = "Martian Mono, ui-monospace, monospace"
+FONTE_TITULO = "Bricolage Grotesque, system-ui, sans-serif"
+
+# Prazos com o nome que a mesa usa, em anos (eixo log).
+PRAZOS = [(1 / 12, "1m"), (0.25, "3m"), (0.5, "6m"), (1, "1a"), (2, "2a"),
+          (3, "3a"), (5, "5a"), (10, "10a"), (15, "15a")]
+
+
+# Título à esquerda, legenda à direita: na mesma linha sem colidir.
+_LEGENDA_DIREITA = dict(orientation="h", yanchor="bottom", y=1.02, x=1, xanchor="right",
+                        bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=TINTA))
+
+
+def _legenda_direita(fig: go.Figure) -> None:
+    fig.update_layout(showlegend=True, legend=_LEGENDA_DIREITA)
 
 
 def _base(titulo: str = "", altura: int = 340) -> go.Figure:
     fig = go.Figure()
     fig.update_layout(
-        title=dict(text=titulo, font=dict(size=14, color=TINTA), x=0, xanchor="left"),
+        title=dict(text=titulo, font=dict(family=FONTE_TITULO, size=15, color=TINTA),
+                   x=0.01, xanchor="left"),
         height=altura,
         margin=dict(l=8, r=8, t=40 if titulo else 12, b=8),
         paper_bgcolor=SUPERFICIE,
         plot_bgcolor=SUPERFICIE,
         font=dict(family=FONTE, size=12, color=TINTA_FRACA),
-        hoverlabel=dict(font=dict(family=FONTE, size=12)),
+        hoverlabel=dict(font=dict(family=FONTE_NUM, size=11), bgcolor=SUPERFICIE,
+                        bordercolor=GRADE),
         showlegend=False,
-        xaxis=dict(gridcolor=GRADE, zerolinecolor=GRADE, linecolor=GRADE),
-        yaxis=dict(gridcolor=GRADE, zerolinecolor=GRADE, linecolor=GRADE),
+        xaxis=dict(gridcolor=GRADE, zerolinecolor=GRADE, linecolor=GRADE,
+                   tickfont=dict(family=FONTE_NUM, size=11)),
+        yaxis=dict(gridcolor=GRADE, zerolinecolor=GRADE, linecolor=GRADE,
+                   tickfont=dict(family=FONTE_NUM, size=11)),
     )
     return fig
 
@@ -59,7 +79,7 @@ def grafico_curva(
     fig.add_trace(
         go.Scatter(
             x=anos, y=curva.taxas * 100, mode="lines", name=rotulo_base,
-            line=dict(color=AZUL, width=2),
+            line=dict(color=TINTA, width=2),
             hovertemplate="%{x:.2f} anos<br>%{y:.3f}%"
                           f"<extra>{rotulo_base}</extra>",
         )
@@ -74,11 +94,51 @@ def grafico_curva(
                               f"<extra>{rotulo_comparacao}</extra>",
             )
         )
-        fig.update_layout(showlegend=True, legend=dict(
-            orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)"))
+        _legenda_direita(fig)
 
-    fig.update_xaxes(title="prazo (anos)", type="log")
+    _eixo_prazo(fig)
     fig.update_yaxes(title="taxa a.a. (%)")
+    return fig
+
+
+def _eixo_prazo(fig: go.Figure, titulo: str = "") -> None:
+    fig.update_xaxes(
+        type="log", title=titulo,
+        tickvals=[a for a, _ in PRAZOS], ticktext=[r for _, r in PRAZOS],
+        tickfont=dict(family=FONTE_NUM, size=11), showgrid=False,
+    )
+
+
+def grafico_hero(base, agora, rotulo_base: str, rotulo_agora: str,
+                 vertices_anos: list[float]) -> go.Figure:
+    """A curva de referência contra a de agora, em largura total.
+
+    Cada ponto da curva de agora é um contrato negociado — os marcadores
+    mostram onde há preço de verdade e onde a curva é interpolação. As guias
+    verticais marcam os vértices de risco, os mesmos da fita logo abaixo.
+    """
+    fig = _base("", altura=300)
+    fig.update_layout(margin=dict(l=8, r=8, t=34, b=8), plot_bgcolor=SUPERFICIE)
+    for anos in vertices_anos:
+        fig.add_vline(x=anos, line=dict(color=GRADE, width=1, dash="dot"))
+
+    fig.add_trace(go.Scatter(
+        x=base.dias_uteis / 252, y=base.taxas * 100, mode="lines", name=rotulo_base,
+        line=dict(color="#9AA6AF", width=1.6),
+        hovertemplate="%{x:.2f}a · %{y:.3f}%" f"<extra>{rotulo_base}</extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=agora.dias_uteis / 252, y=agora.taxas * 100, mode="lines+markers",
+        name=rotulo_agora, line=dict(color=TINTA, width=2.4),
+        marker=dict(size=4.5, color=TINTA),
+        hovertemplate="%{x:.2f}a · %{y:.3f}%" f"<extra>{rotulo_agora}</extra>",
+    ))
+    fig.update_layout(showlegend=True, legend=dict(
+        orientation="h", yanchor="bottom", y=1.02, x=0, bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONTE, size=12, color=TINTA)))
+    _eixo_prazo(fig)
+    fig.update_yaxes(ticksuffix="%", tickfont=dict(family=FONTE_NUM, size=11),
+                     tickformat=".2f", nticks=6)
     return fig
 
 
@@ -141,7 +201,7 @@ def grafico_aproximacao(df) -> go.Figure:
 
     fig.update_layout(
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)"),
+        legend=_LEGENDA_DIREITA,
         hovermode="x unified",
     )
     fig.update_xaxes(title="choque paralelo (bps)", zeroline=True,
@@ -208,7 +268,6 @@ def grafico_backtest(serie, coluna_var: str, titulo: str) -> go.Figure:
         marker=dict(color=NEGATIVO, size=7),
         hovertemplate="%{x|%d/%m/%Y}<br>R$ %{y:,.0f}<extra>exceção</extra>",
     ))
-    fig.update_layout(showlegend=True, legend=dict(
-        orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)"))
+    _legenda_direita(fig)
     fig.update_yaxes(title="P&L (R$)")
     return fig

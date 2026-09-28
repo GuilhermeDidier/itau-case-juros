@@ -35,30 +35,112 @@ from titulos import Titulo  # noqa: E402
 from visual import (  # noqa: E402
     grafico_aproximacao,
     grafico_backtest,
+    grafico_hero,
     grafico_curva,
     grafico_distribuicao,
     grafico_divergente,
 )
 
 st.set_page_config(
-    page_title="Simulador de Juros", layout="wide", initial_sidebar_state="expanded"
+    page_title="Simulador de Juros", layout="wide", initial_sidebar_state="auto"
 )
 
 st.markdown(
     """
     <style>
-      html, body, [class*="css"] { font-feature-settings: "tnum" 1; }
-      [data-testid="stMetricValue"] {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 1.45rem;
+      /* Tokens: ver .streamlit/config.toml */
+      :root {
+        --papel: #ECEFF1; --folha: #FFFFFF; --tinta: #0E1C27; --grafite: #5B6873;
+        --linha: #D3D9DE; --linha-fina: #E6EAED; --sinal: #E0892B;
+        --ganho: #2a78d6; --perda: #e34948;
+        --num: "Martian Mono", ui-monospace, monospace;
+        --titulo: "Bricolage Grotesque", system-ui, sans-serif;
       }
-      [data-testid="stMetricLabel"] { text-transform: uppercase; letter-spacing: .06em; }
+      .block-container { padding-top: 2.4rem; max-width: 1360px; }
       .stDataFrame { font-variant-numeric: tabular-nums; }
-      .rodape { color: #52514e; font-size: .82rem; line-height: 1.5; }
+
+      .olho { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .55rem;
+              margin-bottom: .35rem;
+              font-family: var(--num); font-size: .7rem; letter-spacing: .08em;
+              text-transform: uppercase; color: var(--grafite); }
+      .olho b { color: var(--tinta); font-weight: 600; }
+      .ponto { width: 8px; height: 8px; border-radius: 50%; background: var(--sinal);
+               box-shadow: 0 0 0 0 rgba(224,137,43,.5); animation: pulso 2.4s infinite; }
+      .ponto.parado { background: var(--grafite); animation: none; }
+      @keyframes pulso { 0% { box-shadow: 0 0 0 0 rgba(224,137,43,.45); }
+                         70% { box-shadow: 0 0 0 7px rgba(224,137,43,0); }
+                         100% { box-shadow: 0 0 0 0 rgba(224,137,43,0); } }
+      @media (prefers-reduced-motion: reduce) { .ponto { animation: none; } }
+      h1.titulo { font-family: var(--titulo); font-weight: 650; font-size: 2.35rem;
+                  letter-spacing: -.02em; line-height: 1.05; margin: 0 0 .9rem 0;
+                  padding: 0; color: var(--tinta); }
+
+      /* A fita: o que cada vértice andou e o que isso fez com o livro. */
+      .fita { background: var(--folha); border: 1px solid var(--linha); border-top: 0;
+              border-radius: 0 0 6px 6px; margin: -1rem 0 1.4rem 0; }
+      .fita-cab { font-size: .78rem; color: var(--grafite); padding: .55rem 1rem .1rem; }
+      .fita-linha { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+      .celula { padding: .45rem 1rem .8rem; border-right: 1px solid var(--linha-fina); }
+      .celula:last-child { border-right: 0; background: #F7F9FA; }
+      .prazo { display: block; font-family: var(--num); font-size: .68rem;
+               letter-spacing: .08em; text-transform: uppercase; color: var(--grafite); }
+      .bps { display: block; font-family: var(--num); font-size: 1.3rem; font-weight: 500;
+             color: var(--tinta); margin: .1rem 0 .05rem; font-stretch: 112.5%; }
+      .bps small { font-size: .62rem; color: var(--grafite); margin-left: .15rem; }
+      .rs { font-family: var(--num); font-size: .76rem; }
+      .ganho { color: var(--ganho); } .perda { color: var(--perda); }
+      @media (max-width: 760px) {
+        .fita-linha { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .celula { border-bottom: 1px solid var(--linha-fina); }
+        h1.titulo { font-size: 1.7rem; }
+        .block-container { padding-top: 3.6rem; }
+      }
+
+      /* Cartões */
+      [data-testid="stMetric"] { background: var(--folha); border: 1px solid var(--linha);
+                                 border-radius: 6px; padding: .85rem 1rem .8rem; }
+      [data-testid="stMetricValue"] { font-family: var(--num); font-size: 1.2rem;
+                                      font-weight: 500; font-stretch: 87.5%; }
+      [data-testid="stMetricLabel"] p { font-size: .7rem; letter-spacing: .07em;
+                                        text-transform: uppercase; color: var(--grafite); }
+      [data-testid="stPlotlyChart"] { background: var(--folha); border: 1px solid var(--linha);
+                                      border-radius: 6px; padding: .35rem .5rem; }
+      .hero [data-testid="stPlotlyChart"] { border-radius: 6px 6px 0 0; }
+
+      /* Abas */
+      [data-baseweb="tab-list"] { gap: 1.6rem; border-bottom: 1px solid var(--linha); }
+      button[role="tab"] p, [data-testid="stTab"] p {
+            font-family: var(--titulo) !important; font-size: 1.05rem !important;
+            font-weight: 600 !important; }
+      h5 { font-family: var(--titulo); font-weight: 600; }
+
+      /* Barra lateral: larga o bastante para a carteira caber sem rolagem */
+      @media (min-width: 900px) {
+        section[data-testid="stSidebar"] { width: 380px !important; min-width: 380px !important; }
+      }
+      /* Barra lateral: rótulos de seção discretos, o conteúdo manda */
+      [data-testid="stSidebar"] h3 { font-family: var(--num); font-size: .68rem;
+            letter-spacing: .12em; text-transform: uppercase; color: #8FA0AC;
+            font-weight: 500; margin-top: .6rem; }
+      [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #9DB0BC; }
+
+      .rodape { color: var(--grafite); font-size: .8rem; line-height: 1.55; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Vértices de risco com o nome que a mesa usa.
+ROTULO_VERTICE = {126: "6m", 252: "1a", 504: "2a", 756: "3a", 1260: "5a", 2520: "10a"}
+
+
+def _prazo(rotulo) -> str:
+    """'126 du' -> '6m'; o resto passa como veio."""
+    try:
+        return ROTULO_VERTICE.get(int(str(rotulo).split()[0].replace("du", "")), str(rotulo))
+    except ValueError:
+        return str(rotulo)
+
 
 CARTEIRA_PADRAO = pd.DataFrame(
     [
@@ -159,11 +241,14 @@ FORMATOS = {
     "de": st.column_config.DateColumn("de", format="DD/MM/YYYY"),
     "para": st.column_config.DateColumn("para", format="DD/MM/YYYY"),
     "cenario": st.column_config.TextColumn("cenário"),
+    "vertice": st.column_config.TextColumn("vértice"),
 }
 
 
 def tabela(df: pd.DataFrame, **kwargs) -> None:
     """st.dataframe com rótulo e formato padronizados por nome de coluna."""
+    if "vertice" in df.columns:
+        df = df.assign(vertice=df["vertice"].map(_prazo))
     config = {c: FORMATOS[c] for c in df.columns if c in FORMATOS}
     config.update(kwargs.pop("column_config", {}))
     st.dataframe(df, use_container_width=True, hide_index=True, column_config=config, **kwargs)
@@ -249,31 +334,94 @@ if not carteira.posicoes:
 
 # --- cabeçalho ------------------------------------------------------------
 
-st.markdown("## Simulador de P&L e Risco — Carteira de Juros")
 
 valor = carteira.valor(curva)
 dv01 = carteira.dv01(curva)
 resumo = carteira.resumo(curva)
 
+# Ponto de partida do dia: o ajuste de ontem (ao vivo) ou o pregão anterior
+# (histórico). É contra ele que a curva, a fita e o P&L do dia se medem.
+if ao_vivo is not None:
+    curva_base, rotulo_base = curva_ajuste, f"ajuste {curva_ajuste.data:%d/%m}"
+    rotulo_agora = f"agora · {horario:%H:%M}"
+    if contratos.attrs.get("ajuste_de_hoje"):
+        olho = (f'<span class="ponto parado"></span><b>Pregão encerrado</b> · '
+                f'DI1 B3 · última cotação {horario:%d/%m %H:%M}')
+    else:
+        olho = (f'<span class="ponto"></span><b>Ao vivo</b> · DI1 B3 · '
+                f'cotação {horario:%H:%M} · atraso de ~15 min')
+else:
+    anteriores = [d for d in datas if d < curva.data]
+    curva_base = curva_em(anteriores[-1]) if anteriores else None
+    rotulo_base = f"fechamento {curva_base.data:%d/%m}" if curva_base else ""
+    rotulo_agora = f"fechamento {curva.data:%d/%m}"
+    olho = f'<span class="ponto parado"></span><b>Fechamento</b> · DI1 B3 · {curva.data:%d/%m/%Y}'
+
+pl_dia = carteira.decompor_pl(curva_base, curva) if curva_base is not None else None
+
+st.markdown(f'<div class="olho">{olho}</div><h1 class="titulo">Carteira de juros</h1>',
+            unsafe_allow_html=True)
+
+with st.container(key="hero"):
+    st.markdown('<div class="hero">', unsafe_allow_html=True)
+    if curva_base is not None:
+        st.plotly_chart(
+            grafico_hero(curva_base, curva, rotulo_base, rotulo_agora,
+                         [v / 252 for v in ROTULO_VERTICE]),
+            use_container_width=True, config={"displayModeBar": False},
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _celula(prazo: str, bps: float | None, reais: float) -> str:
+    classe = "ganho" if reais >= 0 else "perda"
+    sinal = "+" if reais >= 0 else "−"
+    corpo = (f'<span class="bps">{bps:+.1f}<small>bp</small></span>' if bps is not None
+             else '<span class="bps">&nbsp;</span>')
+    return (f'<div class="celula"><span class="prazo">{prazo}</span>{corpo}'
+            f'<span class="rs {classe}">{sinal}R$ {abs(reais):,.0f}</span></div>')
+
+
+if pl_dia is not None:
+    linhas = pl_dia["por_vertice"]
+    celulas = "".join(
+        _celula(_prazo(r["vertice"]), r["variacao_bps"], r["PL"])
+        for _, r in linhas.iterrows() if r["vertice"] != "não linear"
+    )
+    resto = float(linhas.loc[linhas["vertice"] == "não linear", "PL"].iloc[0])
+    celulas += _celula("convexidade", None, resto)
+    st.markdown(
+        f'<div class="fita"><div class="fita-cab">Quanto cada vértice andou desde o '
+        f'{rotulo_base} e o que isso fez com o livro</div>'
+        f'<div class="fita-linha">{celulas}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+var_topo, _ = var_historico(carteira, curva, variacoes(), 0.99)
 a, b, c, d = st.columns(4)
 a.metric(
-    "Valor da carteira", f"R$ {carteira.valor_aplicado(curva):,.0f}",
-    help="Capital aplicado em títulos. Futuro de DI1 não tem desembolso — "
+    "Valor aplicado", f"R$ {carteira.valor_aplicado(curva):,.0f}",
+    help="Capital em títulos. Futuro de DI1 não tem desembolso — "
     "entra no risco e no P&L, não no valor.",
 )
 b.metric("DV01", f"R$ {dv01:,.0f}", help="Variação de valor por 1bp de choque paralelo")
-c.metric("Duration média", f"{np.average(resumo['duration'], weights=resumo['valor'].abs()):.2f} anos")
-if ao_vivo is not None:
-    pl_dia = carteira.decompor_pl(curva_ajuste, curva_viva)
+c.metric(
+    "VaR 99% · 1 dia", f"R$ {var_topo.var:,.0f}",
+    help=f"Simulação histórica com {var_topo.n_observacoes:,} dias de DI1. "
+    "Métodos e backtest na aba Risco.",
+)
+if pl_dia is not None:
     d.metric(
-        "P&L do dia",
-        f"R$ {pl_dia['total']:,.0f}",
-        help=f"Do ajuste de {curva_ajuste.data:%d/%m} até a cotação de {horario:%H:%M}. "
-        "Detalhe na aba Decomposição de P&L.",
+        "P&L do dia", f"R$ {pl_dia['total']:,.0f}",
+        help=f"Carrego R$ {pl_dia['carrego']:,.0f} + efeito de taxa "
+        f"R$ {pl_dia['efeito_taxa']:,.0f}"
+        + (f" + caixa/CDI R$ {pl_dia['caixa_recebido']:,.0f}" if pl_dia['caixa_recebido'] else "")
+        + f", desde o {rotulo_base}.",
     )
 else:
     d.metric("Posições", f"{len(carteira.posicoes)}")
 
+st.write("")
 marcacao, cenarios_tab, decomp, risco_tab = st.tabs(
     ["Marcação", "Cenários", "Decomposição de P&L", "Risco"]
 )
@@ -281,37 +429,23 @@ marcacao, cenarios_tab, decomp, risco_tab = st.tabs(
 # --- marcação -------------------------------------------------------------
 
 with marcacao:
-    esq, dir_ = st.columns([3, 2])
-    with esq:
-        st.dataframe(
-            resumo,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "quantidade": st.column_config.NumberColumn(format="%,d"),
-                "PU": st.column_config.NumberColumn(format="%.2f"),
-                "valor": st.column_config.NumberColumn(format="%,.2f"),
-                "taxa_%": st.column_config.NumberColumn(format="%.3f"),
-                "duration": st.column_config.NumberColumn(format="%.2f"),
-                "DV01": st.column_config.NumberColumn(format="%,.2f"),
-                "convexidade": st.column_config.NumberColumn(format="%.1f"),
-            },
-        )
-        st.caption(
-            "PU reconstruído pela curva, fluxo a fluxo, em base 252 dias úteis. "
-            "O apreçador reproduz os PUs oficiais do Tesouro Nacional ao centavo."
-        )
-    with dir_:
-        if ao_vivo is not None:
-            st.plotly_chart(
-                grafico_curva(
-                    curva_ajuste, curva_viva, rotulo_comparacao="agora",
-                    rotulo_base=f"ajuste {curva_ajuste.data:%d/%m}",
-                ),
-                use_container_width=True,
-            )
-        else:
-            st.plotly_chart(grafico_curva(curva), use_container_width=True)
+    tabela(
+        resumo,
+        column_config={
+            "papel": st.column_config.TextColumn("papel"),
+            "quantidade": st.column_config.NumberColumn("quantidade", format="%,d"),
+            "PU": st.column_config.NumberColumn("PU", format="%,.2f"),
+            "valor": st.column_config.NumberColumn("valor (R$)", format="%,.0f"),
+            "duration": st.column_config.NumberColumn("duration (anos)", format="%.2f"),
+            "DV01": st.column_config.NumberColumn("DV01 (R$)", format="%,.0f"),
+            "convexidade": st.column_config.NumberColumn("convexidade", format="%.1f"),
+        },
+    )
+    st.caption(
+        "PU reconstruído pela curva, fluxo a fluxo, em base 252 dias úteis. "
+        "O apreçador reproduz os PUs oficiais do Tesouro Nacional e o ajuste "
+        "do DI1 da B3 ao centavo. Futuro de DI1: valor = exposição (PU × contratos)."
+    )
 
     if ao_vivo is not None:
         with st.expander(f"Contratos de DI1 usados na curva ({len(contratos)})"):
@@ -336,7 +470,7 @@ with marcacao:
 
     st.plotly_chart(
         grafico_divergente(
-            [f"{v} du" for v in VERTICES_PADRAO],
+            [ROTULO_VERTICE[v] for v in VERTICES_PADRAO],
             [carteira.dv01_por_vertice(curva)[v] for v in VERTICES_PADRAO],
             "DV01 por vértice (key rate duration)",
         ),
@@ -381,8 +515,10 @@ with marcacao:
                     st.rerun()
             with dir_:
                 st.dataframe(
-                    efeito, use_container_width=True, hide_index=True,
+                    efeito.assign(vertice=efeito["vertice"].map(_prazo)),
+                    use_container_width=True, hide_index=True,
                     column_config={
+                        "vertice": st.column_config.TextColumn("vértice"),
                         "DV01_antes": st.column_config.NumberColumn("DV01 antes", format="%,.0f"),
                         "DV01_depois": st.column_config.NumberColumn("DV01 depois", format="%,.0f"),
                     },
@@ -421,14 +557,14 @@ with cenarios_tab:
 
     esq, dir_ = st.columns([2, 3])
     with esq:
-        tabela(tabela_cen.drop(columns=["origem"]))
+        tabela(tabela_cen.drop(columns=["origem", "estimativa_dv01"]))
     with dir_:
         st.plotly_chart(
             grafico_divergente(list(tabela_cen["cenario"]), list(tabela_cen["PL"]), "P&L por cenário"),
             use_container_width=True,
         )
     st.caption(
-        "P&L por reprecificação completa, não por DV01. A coluna erro_dv01 mostra "
+        "P&L por reprecificação completa, não por DV01. A coluna erro do DV01 mostra "
         "quanto a aproximação linear teria errado em cada cenário."
     )
 
@@ -596,7 +732,15 @@ with risco_tab:
     if pca.empty:
         st.info("Observações insuficientes para decomposição em componentes.")
     else:
-        st.dataframe(pca, use_container_width=True)
+        pca_tela = pca.rename(columns={f"{v}du": ROTULO_VERTICE[v] for v in VERTICES_PADRAO})
+        st.dataframe(
+            pca_tela, use_container_width=True,
+            column_config={
+                "variancia_explicada_%": st.column_config.NumberColumn("variância explicada %", format="%.1f"),
+                "acumulada_%": st.column_config.NumberColumn("acumulada %", format="%.1f"),
+                **{r: st.column_config.NumberColumn(r, format="%+.2f") for r in ROTULO_VERTICE.values()},
+            },
+        )
         st.caption(
             "A interpretação de cada componente é deduzida do padrão de trocas de "
             "sinal das cargas, não escrita à mão. Nível, inclinação e curvatura "

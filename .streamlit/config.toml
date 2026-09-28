@@ -1,12 +1,43 @@
 # Tema fixo: o vídeo é gravado uma vez e não pode depender do tema do sistema
-# de quem roda. As cores são as mesmas da paleta validada em src/visual.py.
+# de quem roda.
+#
+# Papel e tinta. Fundo cinza-papel frio, cartões brancos, barra lateral em
+# azul-tinta. Azul e vermelho ficam reservados a ganho e perda nos gráficos
+# (paleta validada em src/visual.py); o laranja só marca o "ao vivo".
+#
+#   papel    #ECEFF1   fundo
+#   folha    #FFFFFF   cartões e tabelas
+#   tinta    #0E1C27   texto e barra lateral
+#   grafite  #5B6873   texto secundário
+#   linha    #D3D9DE   bordas
+#   sinal    #E0892B   indicador ao vivo
+
 [theme]
 base = "light"
 primaryColor = "#2a78d6"
-backgroundColor = "#f9f9f7"
-secondaryBackgroundColor = "#fcfcfb"
-textColor = "#0b0b0b"
-font = "monospace"
+backgroundColor = "#ECEFF1"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0E1C27"
+borderColor = "#D3D9DE"
+dataframeBorderColor = "#E3E7EA"
+dataframeHeaderBackgroundColor = "#F5F7F8"
+baseRadius = "6px"
+showWidgetBorder = true
+font = "Instrument Sans:https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&display=swap"
+headingFont = "Bricolage Grotesque:https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&display=swap"
+codeFont = "Martian Mono:https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@87.5..112.5,400..600&display=swap"
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+
+[theme.sidebar]
+backgroundColor = "#0E1C27"
+secondaryBackgroundColor = "#172936"
+textColor = "#E4EAEE"
+borderColor = "#2A3D4B"
+dataframeBorderColor = "#2A3D4B"
+dataframeHeaderBackgroundColor = "#172936"
 
 [server]
 headless = true
+
+[client]
+toolbarMode = "minimal"

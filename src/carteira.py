@@ -164,30 +164,54 @@ class Carteira:
         vertices = vertices or VERTICES_PADRAO
         t0 = liquidacao_inicial or curva_inicial.data
         t1 = liquidacao_final or curva_final.data
-
-        valor_inicial = self.valor(curva_inicial, t0)
-        valor_carregado = self.valor(curva_inicial, t1)  # curva velha, prazo novo
-        valor_final = self.valor(curva_final, t1)
-        caixa = sum(p.caixa(curva_inicial, t0, t1) for p in self.posicoes)
-
-        carrego = valor_carregado - valor_inicial + caixa
-        efeito_taxa = valor_final - valor_carregado
-        total = valor_final + caixa - valor_inicial
+        pl = self.pl_entre(curva_inicial, curva_final, t0, t1)
 
         return {
-            "valor_inicial": valor_inicial,
-            "valor_final": valor_final,
-            "caixa_recebido": caixa,
-            "carrego": carrego,
-            "efeito_taxa": efeito_taxa,
-            "total": total,
+            **pl,
             "por_vertice": self._atribuir_por_vertice(
-                curva_inicial, curva_final, t1, vertices, efeito_taxa
+                curva_inicial, curva_final, t1, vertices, pl["efeito_taxa"]
             ),
             "por_papel": self._atribuir_por_papel(
                 curva_inicial, curva_final, t0, t1
             ),
         }
+
+    def pl_entre(
+        self, curva_inicial: Curva, curva_final: Curva,
+        t0: date | None = None, t1: date | None = None,
+    ) -> dict:
+        """Os totais de `decompor_pl`, sem a atribuição por vértice e papel."""
+        t0 = t0 or curva_inicial.data
+        t1 = t1 or curva_final.data
+        valor_inicial = self.valor(curva_inicial, t0)
+        valor_carregado = self.valor(curva_inicial, t1)  # curva velha, prazo novo
+        valor_final = self.valor(curva_final, t1)
+        caixa = sum(p.caixa(curva_inicial, t0, t1) for p in self.posicoes)
+        return {
+            "valor_inicial": valor_inicial,
+            "valor_final": valor_final,
+            "caixa_recebido": caixa,
+            "carrego": valor_carregado - valor_inicial + caixa,
+            "efeito_taxa": valor_final - valor_carregado,
+            "total": valor_final + caixa - valor_inicial,
+        }
+
+    def resultado_diario(self, curvas: list[Curva]) -> pd.DataFrame:
+        """P&L pregão a pregão ao longo de uma sequência de curvas.
+
+        O resultado de uma semana ou de um mês é a SOMA dos dias, não uma
+        reprecificação só entre as duas pontas: é assim que a mesa acumula
+        (marca todo dia), e é o único jeito certo para o DI1, cujo ajuste
+        diário paga o CDI de cada dia sobre o PU daquele dia.
+        """
+        linhas = []
+        for c0, c1 in zip(curvas, curvas[1:]):
+            pl = self.pl_entre(c0, c1)
+            linhas.append({"de": c0.data, "para": c1.data, "carrego": pl["carrego"],
+                           "efeito_taxa": pl["efeito_taxa"], "total": pl["total"]})
+        df = pd.DataFrame(linhas, columns=["de", "para", "carrego", "efeito_taxa", "total"])
+        df["acumulado"] = df["total"].cumsum()
+        return df
 
     def _atribuir_por_vertice(
         self,

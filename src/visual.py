@@ -271,3 +271,44 @@ def grafico_backtest(serie, coluna_var: str, titulo: str) -> go.Figure:
     _legenda_direita(fig)
     fig.update_yaxes(title="P&L (R$)")
     return fig
+
+
+def grafico_acumulado(serie, titulo: str) -> go.Figure:
+    """P&L acumulado da carteira, fechamento a fechamento.
+
+    Linha em tinta; a área abaixo muda de cor com o sinal do acumulado, para
+    se ver de relance em que trechos a carteira esteve no prejuízo."""
+    fig = _base(titulo, altura=320)
+    x = list(serie["para"])
+    y = list(serie["acumulado"])
+    fig.add_trace(go.Scatter(
+        x=x, y=[max(v, 0) for v in y], mode="lines", line=dict(width=0),
+        fill="tozeroy", fillcolor="rgba(42,120,214,0.12)", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=[min(v, 0) for v in y], mode="lines", line=dict(width=0),
+        fill="tozeroy", fillcolor="rgba(227,73,72,0.12)", hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="lines", line=dict(color=TINTA, width=2),
+        hovertemplate="%{x|%d/%m/%Y}<br>acumulado R$ %{y:,.0f}<extra></extra>",
+    ))
+    fig.update_yaxes(title="R$", zeroline=True, zerolinewidth=1.5, zerolinecolor="#cfcec9")
+    fig.update_xaxes(tickformat="%m/%y")
+    return fig
+
+
+def grafico_diario(serie, titulo: str) -> go.Figure:
+    """P&L de cada pregão, ganho e perda em polos opostos."""
+    fig = _base(titulo, altura=240)
+    fig.add_trace(go.Bar(
+        x=list(serie["para"]), y=list(serie["total"]),
+        marker=dict(color=[POSITIVO if v >= 0 else NEGATIVO for v in serie["total"]],
+                    line=dict(width=0)),
+        customdata=list(serie["de"]),
+        hovertemplate="%{customdata|%d/%m} → %{x|%d/%m/%Y}<br>R$ %{y:,.0f}<extra></extra>",
+    ))
+    fig.update_yaxes(title="R$", zeroline=True, zerolinecolor="#cfcec9")
+    fig.update_layout(bargap=0.15)
+    fig.update_xaxes(tickformat="%m/%y")
+    return fig

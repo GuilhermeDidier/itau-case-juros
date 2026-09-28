@@ -16,7 +16,7 @@ import streamlit as st
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
-from calendario import proximo_dia_util  # noqa: E402
+from calendario import dias_uteis, proximo_dia_util  # noqa: E402
 from carteira import Carteira, VERTICES_PADRAO, hedge_com_di1  # noqa: E402
 from cenarios import (  # noqa: E402
     catalogo_nomeado,
@@ -35,7 +35,9 @@ from risco import (  # noqa: E402
 from titulos import Titulo  # noqa: E402
 from visual import (  # noqa: E402
     grafico_aproximacao,
+    grafico_acumulado,
     grafico_backtest,
+    grafico_diario,
     grafico_hero,
     grafico_curva,
     grafico_distribuicao,
@@ -214,6 +216,11 @@ def ranking_historico(carteira_df: pd.DataFrame, _curva, horizonte: int, chave: 
     return ranking_por_impacto(montar_carteira(carteira_df), _curva, historico(), janela=horizonte)
 
 
+@st.cache_data(ttl=3600, show_spinner="Encadeando o resultado diário…")
+def resultado_fechamentos(carteira_df: pd.DataFrame, dias: tuple, versao: float) -> pd.DataFrame:
+    return montar_carteira(carteira_df).resultado_diario([curva_em(d) for d in dias])
+
+
 def montar_carteira(df: pd.DataFrame) -> Carteira:
     c = Carteira("book de juros")
     for _, r in df.iterrows():
@@ -332,6 +339,14 @@ with st.sidebar:
         f"{len(datas):,} pregões ({datas[0]:%m/%Y} a {datas[-1]:%d/%m/%Y})."
     )
 
+    primeiro_do_ano = min((d for d in datas if d.year == datas[-1].year), default=datas[0])
+    inicio = st.date_input(
+        "resultado acumulado desde", value=primeiro_do_ano, min_value=datas[0],
+        max_value=datas[-1], format="DD/MM/YYYY",
+        help="Data em que a carteira foi montada. O P&L total soma todos os "
+        "pregões desde o fechamento desse dia, com a carteira de hoje mantida fixa.",
+    )
+
     st.markdown("### Cenários")
     intensidade = st.slider("intensidade (bps)", 10, 200, 50, step=5)
 
@@ -370,6 +385,34 @@ else:
     olho = f'<span class="ponto parado"></span><b>Fechamento</b> · DI1 B3 · {curva.data:%d/%m/%Y}'
 
 pl_dia = carteira.decompor_pl(curva_base, curva) if curva_base is not None else None
+
+# --- resultado: dia, semana, mês e total ------------------------------------
+# Soma pregão a pregão desde a montagem (é como a mesa acumula). Ao vivo, os
+# fechamentos do histórico vão até o ajuste de ontem e o último trecho é
+# ajuste -> agora, o mesmo do P&L do dia.
+inicio_d = min((d for d in datas if d >= inicio), default=datas[-1])  # 1º fechamento a partir da montagem
+ultimo_fechamento = curva_base.data if ao_vivo is not None else curva.data
+dias = tuple(d for d in datas if inicio_d <= d <= ultimo_fechamento)
+if ao_vivo is not None:
+    dias = tuple(d for d in dias if d < curva_base.data)
+serie = resultado_fechamentos(editado, dias, _versao_historico())
+if ao_vivo is not None:
+    ponte = ([curva_em(dias[-1])] if dias else []) + [curva_base, curva]
+    serie = pd.concat([serie, carteira.resultado_diario(ponte)], ignore_index=True)
+    serie["acumulado"] = serie["total"].cumsum()
+
+
+def _janela(filtro) -> tuple[float, date | None]:
+    """P&L somado dos pregões que caem na janela e o fechamento de partida."""
+    trecho = serie[serie["para"].map(filtro).astype(bool)]
+    return float(trecho["total"].sum()), (trecho["de"].iloc[0] if len(trecho) else None)
+
+
+hoje = curva.data
+pl_semana, base_semana = _janela(lambda d: d.isocalendar()[:2] == hoje.isocalendar()[:2])
+pl_mes, base_mes = _janela(lambda d: (d.year, d.month) == (hoje.year, hoje.month))
+pl_total, base_total = _janela(lambda d: True)
+buracos = sum(dias_uteis(a, b) - 1 for a, b in zip(serie["de"], serie["para"]))  # pregões faltando
 
 st.markdown(f'<div class="olho">{olho}</div><h1 class="titulo">Carteira de juros</h1>',
             unsafe_allow_html=True)
@@ -410,6 +453,34 @@ if pl_dia is not None:
     )
 
 var_topo, _ = var_historico(carteira, curva, variacoes(), 0.99)
+
+
+def _desde(base: date | None) -> str:
+    return f"Desde o fechamento de {base:%d/%m/%Y}." if base else "Sem pregão no período."
+
+
+a, b, c, d = st.columns(4)
+if pl_dia is not None:
+    a.metric(
+        "P&L do dia", f"R$ {pl_dia['total']:,.0f}",
+        help=f"Carrego R$ {pl_dia['carrego']:,.0f} + efeito de taxa "
+        f"R$ {pl_dia['efeito_taxa']:,.0f}"
+        + (f" + caixa/CDI R$ {pl_dia['caixa_recebido']:,.0f}" if pl_dia['caixa_recebido'] else "")
+        + f", desde o {rotulo_base}.",
+    )
+else:
+    a.metric(
+        "P&L do dia", "—",
+        help="Sem o pregão imediatamente anterior no histórico, não há base para o dia.",
+    )
+b.metric("P&L da semana", f"R$ {pl_semana:,.0f}",
+         help="Soma dos pregões desta semana. " + _desde(base_semana))
+c.metric("P&L do mês", f"R$ {pl_mes:,.0f}",
+         help="Soma dos pregões deste mês. " + _desde(base_mes))
+d.metric(f"P&L total · {inicio_d:%d/%m/%y}", f"R$ {pl_total:,.0f}",
+         help="Soma de todos os pregões desde a montagem da carteira "
+         "(barra lateral). Detalhe na aba Resultado.")
+
 a, b, c, d = st.columns(4)
 a.metric(
     "Valor aplicado", f"R$ {carteira.valor_aplicado(curva):,.0f}",
@@ -423,23 +494,53 @@ c.metric(
     "Métodos e backtest na aba Risco.",
 )
 if pl_dia is not None:
-    d.metric(
-        "P&L do dia", f"R$ {pl_dia['total']:,.0f}",
-        help=f"Carrego R$ {pl_dia['carrego']:,.0f} + efeito de taxa "
-        f"R$ {pl_dia['efeito_taxa']:,.0f}"
-        + (f" + caixa/CDI R$ {pl_dia['caixa_recebido']:,.0f}" if pl_dia['caixa_recebido'] else "")
-        + f", desde o {rotulo_base}.",
-    )
-else:
-    d.metric(
-        "P&L do dia", "—",
-        help="Sem o pregão imediatamente anterior no histórico, não há base para o dia.",
-    )
+    d.metric("Carrego do dia", f"R$ {pl_dia['carrego']:,.0f}",
+             help="O que a carteira rendeu só pela passagem do tempo, com a curva "
+             "parada (inclui roll-down). O resto do P&L do dia é efeito de taxa.")
 
 st.write("")
-marcacao, cenarios_tab, decomp, risco_tab = st.tabs(
-    ["Marcação", "Cenários", "Decomposição de P&L", "Risco"]
+marcacao, resultado_tab, cenarios_tab, decomp, risco_tab = st.tabs(
+    ["Marcação", "Resultado", "Cenários", "Decomposição de P&L", "Risco"]
 )
+
+# --- resultado --------------------------------------------------------------
+
+with resultado_tab:
+    if serie.empty:
+        st.info("Escolha na barra lateral uma data de montagem anterior à de hoje.")
+    else:
+        st.plotly_chart(
+            grafico_acumulado(serie, f"P&L acumulado desde {inicio_d:%d/%m/%Y}"),
+            width="stretch", config={"displayModeBar": False},
+        )
+        st.plotly_chart(
+            grafico_diario(serie, "P&L de cada pregão"),
+            width="stretch", config={"displayModeBar": False},
+        )
+        por_mes = (
+            serie.assign(mes=[f"{d:%m/%Y}" for d in serie["para"]])
+            .groupby("mes", sort=False)
+            .agg(pregoes=("total", "size"), carrego=("carrego", "sum"),
+                 efeito_taxa=("efeito_taxa", "sum"), total=("total", "sum"))
+            .reset_index()
+        )
+        por_mes["acumulado"] = por_mes["total"].cumsum()
+        st.markdown("##### Mês a mês")
+        tabela(por_mes, column_config={
+            "mes": st.column_config.TextColumn("mês"),
+            "pregoes": st.column_config.NumberColumn("pregões", format="%d"),
+            "acumulado": _R("acumulado"),
+        })
+        st.caption(
+            "A carteira de hoje, mantida fixa desde a montagem, marcada no ajuste "
+            "de cada pregão. O total é a soma dos dias — como a mesa acumula — e "
+            "não uma reprecificação só entre as pontas: para o DI1 isso importa, "
+            "porque o ajuste diário paga o CDI de cada dia. Semana e mês seguem o "
+            "calendário (desde o último fechamento da semana e do mês anteriores)."
+            + (f" {buracos} pregões do período ainda faltam no histórico; o "
+               "resultado deles está somado no pregão seguinte, então o total não "
+               "muda, só a barra daquele dia." if buracos else "")
+        )
 
 # --- marcação -------------------------------------------------------------
 

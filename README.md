@@ -13,8 +13,9 @@ Todo dado é público e oficial da B3. Nada depende de terminal pago.
 | Parte | O que responde |
 |---|---|
 | Curva e fita | O que a curva fez desde o ajuste de ontem e quanto cada vértice (6m a 10a) rendeu ou custou à carteira |
-| Indicadores | Valor aplicado, DV01, VaR 99% de 1 dia e P&L do dia |
+| Indicadores | P&L do dia, da semana, do mês e total; valor aplicado, DV01, VaR 99% de 1 dia e carrego do dia |
 | Marcação | PU, duration, DV01 e convexidade por papel; DV01 por vértice; hedge com futuros de DI1 |
+| Resultado | P&L acumulado desde a montagem da carteira, P&L de cada pregão e fechamento mês a mês |
 | Cenários | Choques nomeados e os piores dias desde 2018, ranqueados pelo impacto nesta carteira (1 ou 5 dias) |
 | Decomposição de P&L | Carrego contra efeito de taxa, por vértice e por papel, fechando sem resíduo |
 | Risco | VaR e ES por três métodos, backtest do VaR (Kupiec e semáforo de Basileia) e PCA da curva |
@@ -96,6 +97,12 @@ registrado como aberto, em vez de alargar a tolerância do teste.
 **Futuro de DI1 não tem desembolso.** O ajuste diário corrige o PU de ontem
 pelo CDI, então o carrego do DI1 é a taxa do contrato menos o CDI, e o futuro
 entra no risco e no P&L mas não no valor aplicado.
+
+**Resultado acumulado é a soma dos dias.** Semana, mês e total somam o P&L de
+cada pregão, como a mesa acumula, em vez de reprecificar só entre as pontas.
+Para títulos as duas contas são idênticas (a soma telescopa, e o teste confere
+ao centavo); para o DI1 não, porque o ajuste de cada dia paga o CDI sobre o PU
+daquele dia. Semana e mês seguem o calendário.
 
 **Hedge vértice a vértice.** Zerar só o DV01 total deixa a carteira exposta à
 inclinação. O hedge resolve um sistema linear pela key rate duration inteira,

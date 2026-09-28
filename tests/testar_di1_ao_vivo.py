@@ -33,12 +33,19 @@ def main() -> int:
           f"origem {df['origem'].value_counts().to_dict()}")
     assert len(ao_vivo.dias_uteis) >= 20, "poucos vencimentos na cotação"
 
-    oficial = FonteB3("PRE", usar_cache=False).curva(ajuste.data)
-    dif = (ajuste.taxas - oficial.taxa(ajuste.dias_uteis)) * 10_000
-    pior = np.abs(dif).max()
-    print(f"ajuste DI1 x PRE oficial em {ajuste.data}: {len(dif)} vértices, "
-          f"maior diferença {pior:.2f}bp")
-    assert pior < TOLERANCIA_BPS, f"curva do DI1 descolou da PRE: {pior:.2f}bp"
+    if df.attrs.get("ajuste_de_hoje"):
+        # Depois do fechamento a B3 troca o "ajuste anterior" pelo de hoje; a
+        # fonte percebe (não bate com a PRE de ontem) e usa a PRE oficial.
+        print(f"pregão encerrado: a cotação já traz o ajuste de hoje; ponto de "
+              f"partida do P&L = {ajuste.fonte} de {ajuste.data}. A conferência "
+              f"campo a campo só é possível durante o pregão.")
+    else:
+        oficial = FonteB3("PRE", usar_cache=False).curva(ajuste.data)
+        dif = (ajuste.taxas - oficial.taxa(ajuste.dias_uteis)) * 10_000
+        pior = np.abs(dif).max()
+        print(f"ajuste DI1 x PRE oficial em {ajuste.data}: {len(dif)} vértices, "
+              f"maior diferença {pior:.2f}bp")
+        assert pior < TOLERANCIA_BPS, f"curva do DI1 descolou da PRE: {pior:.2f}bp"
 
     print("ok")
     return 0

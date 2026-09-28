@@ -16,7 +16,7 @@ import streamlit as st
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
-from carteira import Carteira, VERTICES_PADRAO  # noqa: E402
+from carteira import Carteira, VERTICES_PADRAO, hedge_com_di1  # noqa: E402
 from cenarios import (  # noqa: E402
     catalogo_nomeado,
     cenario_historico,
@@ -114,29 +114,64 @@ def montar_carteira(df: pd.DataFrame) -> Carteira:
         if pd.isna(r["quantidade"]) or r["quantidade"] == 0:
             continue
         venc = pd.Timestamp(r["vencimento"]).date()
-        papel = Titulo.ltn(venc) if r["tipo"] == "LTN" else Titulo.ntnf(venc)
+        papel = {"LTN": Titulo.ltn, "NTN-F": Titulo.ntnf, "DI1": Titulo.di1}[r["tipo"]](venc)
         c.adicionar(papel, float(r["quantidade"]))
     return c
 
+
+
+_R = lambda rotulo: st.column_config.NumberColumn(rotulo, format="%,.0f")  # noqa: E731
+FORMATOS = {
+    "PL": _R("P&L (R$)"), "PL_%": st.column_config.NumberColumn("P&L %", format="%.3f"),
+    "estimativa_dv01": _R("estimativa DV01"), "erro_dv01": _R("erro do DV01"),
+    "carrego": _R("carrego"), "efeito_taxa": _R("efeito de taxa"), "total": _R("total"),
+    "VaR": _R("VaR (R$)"), "ES": _R("ES (R$)"), "DV01": _R("DV01"),
+    "n": st.column_config.NumberColumn("n", format="%,d"),
+    "max_abs_bps": st.column_config.NumberColumn("maior mov. (bps)", format="%.1f"),
+    "curta_bps": st.column_config.NumberColumn("6 meses (bps)", format="%+.1f"),
+    "longa_bps": st.column_config.NumberColumn("10 anos (bps)", format="%+.1f"),
+    "variacao_bps": st.column_config.NumberColumn("variação (bps)", format="%+.2f"),
+    "taxa_inicial_%": st.column_config.NumberColumn("taxa inicial %", format="%.3f"),
+    "taxa_final_%": st.column_config.NumberColumn("taxa final %", format="%.3f"),
+    "taxa_%": st.column_config.NumberColumn("taxa %", format="%.2f"),
+    "de": st.column_config.DateColumn("de", format="DD/MM/YYYY"),
+    "para": st.column_config.DateColumn("para", format="DD/MM/YYYY"),
+    "cenario": st.column_config.TextColumn("cenário"),
+}
+
+
+def tabela(df: pd.DataFrame, **kwargs) -> None:
+    """st.dataframe com rótulo e formato padronizados por nome de coluna."""
+    config = {c: FORMATOS[c] for c in df.columns if c in FORMATOS}
+    config.update(kwargs.pop("column_config", {}))
+    st.dataframe(df, use_container_width=True, hide_index=True, column_config=config, **kwargs)
 
 # --- barra lateral --------------------------------------------------------
 
 with st.sidebar:
     st.markdown("### Carteira")
+    if "carteira_base" not in st.session_state:
+        st.session_state["carteira_base"] = CARTEIRA_PADRAO
     editado = st.data_editor(
-        CARTEIRA_PADRAO,
+        st.session_state["carteira_base"],
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
         column_config={
-            "tipo": st.column_config.SelectboxColumn("tipo", options=["LTN", "NTN-F"]),
+            "tipo": st.column_config.SelectboxColumn("tipo", options=["LTN", "NTN-F", "DI1"]),
             "vencimento": st.column_config.DateColumn("vencimento", format="DD/MM/YYYY"),
             "quantidade": st.column_config.NumberColumn(
-                "quantidade", format="%d", help="Negativa = posição vendida"
+                "quantidade", format="%d",
+                help="Negativa = posição vendida. DI1 em contratos: positivo = "
+                "comprado em PU (dado em taxa), negativo = vendido em PU (tomado).",
             ),
         },
         key="carteira",
     )
+    if st.button("restaurar carteira de exemplo", use_container_width=True):
+        st.session_state["carteira_base"] = CARTEIRA_PADRAO
+        st.session_state.pop("carteira", None)
+        st.rerun()
 
     st.markdown("### Curva")
     if not historico().caminho.exists():
@@ -162,6 +197,11 @@ with st.sidebar:
             f"Cotação de {horario:%d/%m %H:%M}, com o atraso de ~15 min do dado "
             f"público. Atualiza a cada 60 s."
         )
+        if contratos.attrs.get("ajuste_de_hoje"):
+            st.caption(
+                "Pregão encerrado: a B3 já publicou o ajuste de hoje. O P&L do dia "
+                f"parte da curva oficial de {curva_ajuste.data:%d/%m}."
+            )
         if st.button("atualizar agora", use_container_width=True):
             mercado_ao_vivo.clear()
             st.rerun()
@@ -194,7 +234,11 @@ dv01 = carteira.dv01(curva)
 resumo = carteira.resumo(curva)
 
 a, b, c, d = st.columns(4)
-a.metric("Valor da carteira", f"R$ {valor:,.0f}")
+a.metric(
+    "Valor da carteira", f"R$ {carteira.valor_aplicado(curva):,.0f}",
+    help="Capital aplicado em títulos. Futuro de DI1 não tem desembolso — "
+    "entra no risco e no P&L, não no valor.",
+)
 b.metric("DV01", f"R$ {dv01:,.0f}", help="Variação de valor por 1bp de choque paralelo")
 c.metric("Duration média", f"{np.average(resumo['duration'], weights=resumo['valor'].abs()):.2f} anos")
 if ao_vivo is not None:
@@ -282,6 +326,53 @@ with marcacao:
         "representáveis, em vez de só choque paralelo."
     )
 
+    st.markdown("##### Hedge com futuros de DI1")
+    if ao_vivo is None:
+        st.info("O hedge escolhe contratos pela liquidez do pregão — use a marcação ao vivo.")
+    else:
+        ordens, efeito = hedge_com_di1(
+            carteira, curva, dict(zip(contratos["vencimento"], contratos["contratos_em_aberto"]))
+        )
+        if ordens.empty:
+            st.success("A carteira já está com o DV01 zerado vértice a vértice.")
+        else:
+            esq, dir_ = st.columns([3, 2])
+            with esq:
+                st.dataframe(
+                    ordens, use_container_width=True, hide_index=True,
+                    column_config={
+                        "vencimento": st.column_config.DateColumn(format="MM/YYYY"),
+                        "contratos": st.column_config.NumberColumn(format="%+d"),
+                        "DV01_hedge": st.column_config.NumberColumn("DV01 do hedge", format="%,.0f"),
+                    },
+                )
+                if st.button("adicionar hedge à carteira"):
+                    novas = pd.DataFrame({
+                        "tipo": "DI1",
+                        "vencimento": ordens["vencimento"],
+                        "quantidade": ordens["contratos"],
+                    })
+                    st.session_state["carteira_base"] = pd.concat(
+                        [editado, novas], ignore_index=True
+                    )
+                    st.session_state.pop("carteira", None)
+                    st.rerun()
+            with dir_:
+                st.dataframe(
+                    efeito, use_container_width=True, hide_index=True,
+                    column_config={
+                        "DV01_antes": st.column_config.NumberColumn("DV01 antes", format="%,.0f"),
+                        "DV01_depois": st.column_config.NumberColumn("DV01 depois", format="%,.0f"),
+                    },
+                )
+            st.caption(
+                "Zera a key rate duration inteira, não só o DV01 total: um hedge "
+                "só paralelo deixaria a carteira exposta a inclinação. Para cada "
+                "vértice, o contrato mais negociado (em aberto) com prazo a até "
+                "25% do vértice. O que sobra no 'depois' é arredondamento para "
+                "contrato inteiro."
+            )
+
 # --- cenários -------------------------------------------------------------
 
 with cenarios_tab:
@@ -304,14 +395,14 @@ with cenarios_tab:
             )
         )
 
-    tabela = carteira.rodar_cenarios(curva, lista)
+    tabela_cen = carteira.rodar_cenarios(curva, lista)
 
     esq, dir_ = st.columns([2, 3])
     with esq:
-        st.dataframe(tabela, use_container_width=True, hide_index=True)
+        tabela(tabela_cen.drop(columns=["origem"]))
     with dir_:
         st.plotly_chart(
-            grafico_divergente(list(tabela["cenario"]), list(tabela["PL"]), "P&L por cenário"),
+            grafico_divergente(list(tabela_cen["cenario"]), list(tabela_cen["PL"]), "P&L por cenário"),
             use_container_width=True,
         )
     st.caption(
@@ -320,7 +411,7 @@ with cenarios_tab:
     )
 
     st.markdown("#### Dias históricos, ordenados pelo impacto nesta carteira")
-    st.dataframe(ranking.head(8), use_container_width=True, hide_index=True)
+    tabela(ranking.head(8))
     st.caption(
         "Ordenado por P&L, não por variação em bps. O dia que mais move a curva "
         "não é o que mais dói: um choque de 25bps no overnight quase não tem DV01."
@@ -342,13 +433,13 @@ with decomp:
         h1, h2, h3, h4 = st.columns(4)
         h1.metric("Carrego", f"R$ {pl_dia['carrego']:,.0f}")
         h2.metric("Efeito de taxa", f"R$ {pl_dia['efeito_taxa']:,.0f}")
-        h3.metric("Caixa recebido", f"R$ {pl_dia['caixa_recebido']:,.0f}")
+        h3.metric("Caixa (cupom / CDI)", f"R$ {pl_dia['caixa_recebido']:,.0f}")
         h4.metric("Total", f"R$ {pl_dia['total']:,.0f}")
-        esq, dir_ = st.columns([3, 2])
+        esq, dir_ = st.columns([1, 1])
         with esq:
-            st.dataframe(pl_dia["por_vertice"], use_container_width=True, hide_index=True)
+            tabela(pl_dia["por_vertice"].drop(columns=["taxa_inicial_%", "taxa_final_%"]))
         with dir_:
-            st.dataframe(pl_dia["por_papel"], use_container_width=True, hide_index=True)
+            tabela(pl_dia["por_papel"])
         st.caption(
             "Mesma decomposição do histórico, aplicada ao pregão em andamento: "
             "o ponto de partida é o ajuste de ontem, que é onde a mesa foi marcada."
@@ -377,7 +468,7 @@ with decomp:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Carrego", f"R$ {r['carrego']:,.0f}")
         m2.metric("Efeito de taxa", f"R$ {r['efeito_taxa']:,.0f}")
-        m3.metric("Caixa recebido", f"R$ {r['caixa_recebido']:,.0f}")
+        m3.metric("Caixa (cupom / CDI)", f"R$ {r['caixa_recebido']:,.0f}")
         m4.metric("Total", f"R$ {r['total']:,.0f}")
 
         st.caption(
@@ -386,17 +477,17 @@ with decomp:
             "parcelas somam o total exatamente, sem resíduo."
         )
 
-        esq, dir_ = st.columns([3, 2])
+        esq, dir_ = st.columns([1, 1])
         with esq:
             st.markdown("##### Efeito de taxa atribuído por vértice")
-            st.dataframe(r["por_vertice"], use_container_width=True, hide_index=True)
+            tabela(r["por_vertice"].drop(columns=["taxa_inicial_%", "taxa_final_%"]))
             st.caption(
                 "A linha 'não linear' é convexidade e movimento entre vértices. "
                 "Aparece explícita em vez de diluída nos vértices."
             )
         with dir_:
             st.markdown("##### Por papel")
-            st.dataframe(r["por_papel"], use_container_width=True, hide_index=True)
+            tabela(r["por_papel"])
 
     st.divider()
     st.markdown("##### Onde a aproximação linear quebra")
@@ -442,7 +533,7 @@ with risco_tab:
     )
     esq, dir_ = st.columns([2, 3])
     with esq:
-        st.dataframe(tabela_risco, use_container_width=True, hide_index=True)
+        tabela(tabela_risco)
         st.caption(
             f"{len(var_df):,} variações diárias do DI1 desde {var_df.index[0]:%m/%Y}. "
             "Histórico não assume distribuição. Paramétrico é gaussiano e linear. "
@@ -462,7 +553,7 @@ with risco_tab:
     except ValueError as erro:
         st.info(str(erro))
     else:
-        st.dataframe(resumo_bt, use_container_width=True, hide_index=True)
+        tabela(resumo_bt)
         metodo_bt = st.radio(
             "método", ["histórico", "paramétrico"], horizontal=True, key="metodo_bt"
         )

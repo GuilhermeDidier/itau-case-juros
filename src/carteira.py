@@ -40,6 +40,24 @@ class Posicao:
     def valor(self, curva: Curva, liquidacao: date | None = None) -> float:
         return self.quantidade * self.titulo.pu_por_curva(curva, liquidacao)
 
+    def caixa(self, curva_inicial: Curva, inicio: date, fim: date) -> float:
+        """Dinheiro que entrou ou saiu entre as datas, fora a marcação.
+
+        Título: cupom e principal pagos. Futuro de DI1: o ajuste diário
+        corrige o PU de ontem pelo CDI antes de comparar com o de hoje, então
+        a posição "paga" CDI sobre o PU. É por isso que o carrego de um DI1 é
+        a taxa do contrato MENOS o CDI, e não a taxa inteira como numa LTN.
+        O CDI é lido no vértice mais curto da curva inicial.
+        """
+        if not self.titulo.futuro:
+            return self.caixa_entre(inicio, fim)
+        from calendario import dias_uteis
+
+        du = dias_uteis(inicio, fim)
+        cdi = curva_inicial.taxa(1)
+        pu = self.titulo.pu_por_curva(curva_inicial, inicio)
+        return -self.quantidade * pu * ((1 + cdi) ** (du / 252) - 1)
+
     def caixa_entre(self, inicio: date, fim: date) -> float:
         """Cupom e principal recebidos em (inicio, fim].
 
@@ -67,7 +85,14 @@ class Carteira:
     # --- marcação --------------------------------------------------------
 
     def valor(self, curva: Curva, liquidacao: date | None = None) -> float:
+        """Soma marcada a mercado, futuros incluídos pelo PU — é a base de
+        todo P&L por reprecificação (VaR, cenários), onde só a diferença
+        importa."""
         return sum(p.valor(curva, liquidacao) for p in self.posicoes)
+
+    def valor_aplicado(self, curva: Curva, liquidacao: date | None = None) -> float:
+        """Capital de fato aplicado: só títulos. Futuro não tem desembolso."""
+        return sum(p.valor(curva, liquidacao) for p in self.posicoes if not p.titulo.futuro)
 
     def dv01(self, curva: Curva, liquidacao: date | None = None) -> float:
         return sum(
@@ -143,7 +168,7 @@ class Carteira:
         valor_inicial = self.valor(curva_inicial, t0)
         valor_carregado = self.valor(curva_inicial, t1)  # curva velha, prazo novo
         valor_final = self.valor(curva_final, t1)
-        caixa = sum(p.caixa_entre(t0, t1) for p in self.posicoes)
+        caixa = sum(p.caixa(curva_inicial, t0, t1) for p in self.posicoes)
 
         carrego = valor_carregado - valor_inicial + caixa
         efeito_taxa = valor_final - valor_carregado
@@ -220,7 +245,7 @@ class Carteira:
             inicial = p.valor(curva_inicial, t0)
             carregado = p.valor(curva_inicial, t1)
             final = p.valor(curva_final, t1)
-            caixa = p.caixa_entre(t0, t1)
+            caixa = p.caixa(curva_inicial, t0, t1)
             linhas.append(
                 {
                     "papel": p.nome,
@@ -314,3 +339,74 @@ class Carteira:
                 }
             )
         return pd.DataFrame(linhas)
+
+
+# --- hedge --------------------------------------------------------------------
+
+
+def hedge_com_di1(
+    carteira: Carteira,
+    curva: Curva,
+    candidatos: dict[date, float],
+    vertices: list[int] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Quantos contratos de DI1 zeram o DV01 da carteira vértice a vértice.
+
+    Zerar só o DV01 total deixaria a carteira exposta a inclinação: vendida na
+    ponta curta e comprada na longa, um choque paralelo não dói mas um
+    steepening sim. Por isso o alvo é a key rate duration inteira — um
+    contrato por vértice, resolvido como sistema linear.
+
+    `candidatos` mapeia vencimento → liquidez (contratos em aberto). Para cada
+    vértice fica o contrato mais líquido com prazo a até 25% do vértice; se
+    nenhum cair na faixa, o de prazo mais próximo. Escolher só pela
+    proximidade mandaria o hedge para vencimentos sem mercado; escolher só
+    pela liquidez deixaria a ponta longa sem contrato. Quantidades são
+    arredondadas para contrato inteiro; o que sobra aparece no "depois".
+    """
+    vertices = vertices or VERTICES_PADRAO
+    alvo = carteira.dv01_por_vertice(curva, vertices)
+
+    opcoes = []  # (contrato, prazo em du, liquidez)
+    for venc, liquidez in candidatos.items():
+        contrato = Titulo.di1(venc)
+        prazo = contrato.prazos_du(curva.data)
+        if len(prazo):
+            opcoes.append((contrato, float(prazo[-1]), float(liquidez)))
+
+    escolhidos: dict[str, Titulo] = {}
+    for v in vertices:
+        livres = [o for o in opcoes if o[0].nome not in escolhidos]
+        na_faixa = [o for o in livres if abs(o[1] - v) <= 0.25 * v]
+        melhor = (max(na_faixa, key=lambda o: o[2]) if na_faixa
+                  else min(livres, key=lambda o: abs(o[1] - v)))
+        escolhidos[melhor[0].nome] = melhor[0]
+
+    contratos = list(escolhidos.values())
+    matriz = np.array(
+        [[c.dv01_por_vertice(curva, vertices)[v] for c in contratos] for v in vertices]
+    )
+    b = -np.array([alvo[v] for v in vertices])
+    q, *_ = np.linalg.lstsq(matriz, b, rcond=None)
+    q_inteiro = np.round(q)
+
+    depois = {v: alvo[v] + float(matriz[i] @ q_inteiro) for i, v in enumerate(vertices)}
+    ordens = pd.DataFrame(
+        {
+            "contrato": [c.nome for c in contratos],
+            "vencimento": [c.vencimento for c in contratos],
+            "contratos": q_inteiro.astype(int),
+            "ordem": ["dar taxa" if x > 0 else "tomar taxa"
+                      for x in q_inteiro],
+            "DV01_hedge": [round(float(c.dv01(curva)) * x, 2) for c, x in zip(contratos, q_inteiro)],
+        }
+    )
+    ordens = ordens[ordens["contratos"] != 0].reset_index(drop=True)
+    efeito = pd.DataFrame(
+        {
+            "vertice": [f"{v} du" for v in vertices],
+            "DV01_antes": [round(alvo[v], 2) for v in vertices],
+            "DV01_depois": [round(depois[v], 2) for v in vertices],
+        }
+    )
+    return ordens, efeito

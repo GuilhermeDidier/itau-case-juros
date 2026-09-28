@@ -21,6 +21,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from calendario import pares_consecutivos
 from curvas import Curva, FonteCurva
 
 # Âncoras em dias úteis: 6 meses, 1, 2, 5 e 10 anos.
@@ -173,7 +174,7 @@ def catalogar_movimentos(
     datas = sorted(datas or fonte.datas_disponiveis())
 
     linhas = []
-    for anterior, atual in zip(datas, datas[janela:]):
+    for anterior, atual in pares_consecutivos(datas, janela):
         try:
             c0, c1 = fonte.curva(anterior), fonte.curva(atual)
         except Exception:  # noqa: BLE001
@@ -223,7 +224,7 @@ def ranking_por_impacto(
     base = carteira.valor(curva_hoje)
 
     linhas = []
-    for anterior, atual in zip(datas, datas[janela:]):
+    for anterior, atual in pares_consecutivos(datas, janela):
         try:
             c0, c1 = fonte.curva(anterior), fonte.curva(atual)
         except Exception:  # noqa: BLE001

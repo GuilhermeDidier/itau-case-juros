@@ -41,14 +41,28 @@ def main() -> int:
         columns={"data": "anterior", "ajuste": "ajuste_ontem"}
     )
     par = df.merge(ontem, on=["anterior", "contrato"]).dropna(subset=["ajuste_anterior"])
-    # Contrato a menos de 1 mês do vencimento: poucos dias úteis amplificam o
-    # arredondamento da conversão PU→taxa. Fica fora da régua.
-    par = par[par.apply(lambda r: (fonte.vencimento(r.contrato) - r.data).days > 30, axis=1)]
+    # Só contratos com mais de 1 ano. O ajuste anterior vem corrigido pelo CDI
+    # e reconvertido em taxa com o prazo de hoje; a diferença resultante cresce
+    # como 1/prazo (medido: p99 de 6,4bp até 1 mês, 0,6bp acima de 2 anos).
+    # O que o teste procura — data desalinhada — apareceria em todos os
+    # prazos, com o tamanho de um movimento diário (5-10bp).
+    par = par[par.apply(lambda r: (fonte.vencimento(r.contrato) - r.data).days > 365, axis=1)]
     dif = (par["ajuste_anterior"] - par["ajuste_ontem"]).abs() * 100
     print(f"encadeamento: {len(par):,} pares, |dif| p99 {dif.quantile(.99):.2f}bp, "
           f"máx {dif.max():.2f}bp")
     if dif.quantile(0.99) > 1.0:
         print("  FALHOU: ajuste anterior não encadeia com o do dia anterior")
+        ok = False
+
+    # Um buraco no histórico não pode virar "variação diária" de semanas.
+    from carteira import VERTICES_PADRAO
+    from risco import variacoes_historicas
+
+    var = variacoes_historicas(fonte, VERTICES_PADRAO)
+    maior = float(var.abs().max().max())
+    print(f"variações diárias: {len(var):,}, maior movimento {maior:.1f}bp")
+    if maior > 150:
+        print("  FALHOU: variação diária implausível — datas não consecutivas pareadas?")
         ok = False
 
     b3 = FonteB3("PRE")

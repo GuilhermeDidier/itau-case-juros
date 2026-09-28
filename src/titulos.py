@@ -19,6 +19,7 @@ from calendario import BASE_252, dias_uteis, proximo_dia_util
 
 PRINCIPAL = 1000.0
 CUPOM_NTNF_AA = 0.10
+DI1_NOCIONAL = 100_000.0
 
 
 def cupom_semestral(taxa_anual: float, principal: float = PRINCIPAL) -> float:
@@ -41,6 +42,9 @@ class Titulo:
     vencimento: date
     fluxos: list[Fluxo]
     principal: float = PRINCIPAL
+    # Futuro não tem desembolso: o ajuste diário corrige o preço de ontem pelo
+    # CDI. Muda o carrego e o "valor" da carteira, não o risco de taxa.
+    futuro: bool = False
 
     # Contar dia útil é caro e o fluxo não muda dentro de uma data de
     # liquidação. Sem esse cache, uma bisseção de 200 passos recontava o
@@ -63,6 +67,20 @@ class Titulo:
             vencimento=vencimento,
             fluxos=[Fluxo(vencimento, principal)],
             principal=principal,
+        )
+
+    @classmethod
+    def di1(cls, vencimento: date) -> "Titulo":
+        """Contrato futuro de DI1: R$ 100 mil no primeiro dia útil do mês de
+        vencimento, PU descontado pela taxa do contrato — um zero-cupom."""
+        mes = date(vencimento.year, vencimento.month, 1)
+        letra = "FGHJKMNQUVXZ"[mes.month - 1]
+        return cls(
+            nome=f"DI1{letra}{mes:%y}",
+            vencimento=mes,
+            fluxos=[Fluxo(mes, DI1_NOCIONAL)],
+            principal=DI1_NOCIONAL,
+            futuro=True,
         )
 
     @classmethod

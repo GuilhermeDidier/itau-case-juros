@@ -455,11 +455,31 @@ class FonteDI1AoVivo:
         return self._montar(df, hoje, "taxa", "DI1 ao vivo")
 
     def curva_fechamento_anterior(self, df: pd.DataFrame | None = None) -> Curva:
-        """Curva dos ajustes do pregão anterior — o ponto de partida do P&L do dia."""
+        """Curva do pregão anterior — o ponto de partida do P&L do dia.
+
+        Durante o pregão, é a dos ajustes anteriores que a própria cotação
+        traz. Depois do fechamento a B3 troca esse campo pelo ajuste DE HOJE
+        (medido em 28/09/2026: 13,548 às 15h48, 13,560 às 17h48 no DI1F27), e
+        usá-lo daria um "P&L do dia" perto de zero e datado errado. Por isso o
+        campo é conferido contra a curva oficial de ontem; se não bater, a
+        curva de ontem vem da própria fonte oficial.
+        """
         df = self.contratos() if df is None else df
         hoje = self.pregao(df)
         ontem = proximo_dia_util(hoje, -1)
-        return self._montar(df, ontem, "ajuste_anterior", "DI1 ajuste anterior")
+        pelo_campo = self._montar(df, ontem, "ajuste_anterior", "DI1 ajuste anterior")
+        try:
+            oficial = FonteB3("PRE").curva(ontem)
+        except Exception:  # noqa: BLE001 — sem a oficial, fica o campo
+            df.attrs["ajuste_de_hoje"] = None
+            return pelo_campo
+        dif = np.abs(pelo_campo.taxas - oficial.taxa(pelo_campo.dias_uteis)) * 10_000
+        if dif.max() < 2.0:
+            df.attrs["ajuste_de_hoje"] = False
+            return pelo_campo
+        df.attrs["ajuste_de_hoje"] = True
+        return Curva(data=ontem, dias_uteis=oficial.dias_uteis, taxas=oficial.taxas,
+                     nome="PRE oficial", fonte="B3/PRE")
 
     # Protocolo FonteCurva: a fonte ao vivo só conhece o dia de hoje.
     def datas_disponiveis(self) -> list[date]:

@@ -111,3 +111,19 @@ def grade_dias_uteis(inicio, fim) -> list[date]:
     dias = pd.date_range(_as_date(inicio), _as_date(fim), freq="D")
     marcados = np.is_busday(dias.values.astype("datetime64[D]"), busdaycal=cal)
     return [d.date() for d, ok in zip(dias, marcados) if ok]
+
+
+def pares_consecutivos(datas, passo: int = 1) -> list[tuple[date, date]]:
+    """Pares (d, d + passo dias úteis) em que as DUAS pontas existem.
+
+    Parear a lista de datas pela posição quebra quando falta um dia: um
+    buraco de download vira uma "variação diária" que na verdade cobre
+    semanas — ou anos. Aqui o par só existe se a distância for exata.
+    """
+    disponiveis = set(datas)
+    pares = []
+    for d in sorted(disponiveis):
+        alvo = proximo_dia_util(d, passo)
+        if alvo in disponiveis:
+            pares.append((d, alvo))
+    return pares

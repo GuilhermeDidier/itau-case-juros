@@ -41,6 +41,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from calendario import pares_consecutivos
 from curvas import Curva, FonteCurva
 
 # Abaixo disso, estimar um quantil de 99% é ilusão: o 1% da cauda cai em
@@ -109,7 +110,7 @@ def variacoes_historicas(
 
     disponiveis = sorted(curvas)
     linhas, indice = [], []
-    for anterior, atual in zip(disponiveis, disponiveis[horizonte_du:]):
+    for anterior, atual in pares_consecutivos(disponiveis, horizonte_du):
         c0, c1 = curvas[anterior], curvas[atual]
         linhas.append([(c1.taxa(v) - c0.taxa(v)) * 10_000 for v in vertices])
         indice.append(atual)

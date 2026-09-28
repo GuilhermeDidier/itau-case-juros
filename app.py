@@ -56,7 +56,8 @@ st.markdown(
         --num: "Martian Mono", ui-monospace, monospace;
         --titulo: "Bricolage Grotesque", system-ui, sans-serif;
       }
-      .block-container { padding-top: 2.4rem; max-width: 1360px; }
+      /* No Streamlit Cloud há uma barra fixa no topo: o respiro tem que cobri-la */
+      .block-container { padding-top: 4.2rem; max-width: 1360px; }
       .stDataFrame { font-variant-numeric: tabular-nums; }
 
       .olho { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .55rem;
@@ -265,10 +266,12 @@ with st.sidebar:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "tipo": st.column_config.SelectboxColumn("tipo", options=["LTN", "NTN-F", "DI1"]),
-            "vencimento": st.column_config.DateColumn("vencimento", format="DD/MM/YYYY"),
+            "tipo": st.column_config.SelectboxColumn(
+                "tipo", options=["LTN", "NTN-F", "DI1"], width=70),
+            "vencimento": st.column_config.DateColumn(
+                "vencimento", format="DD/MM/YYYY", width=108),
             "quantidade": st.column_config.NumberColumn(
-                "quantidade", format="%d",
+                "quantidade", format="%,d", width=110,
                 help="Negativa = posição vendida. DI1 em contratos: positivo = "
                 "comprado em PU (dado em taxa), negativo = vendido em PU (tomado).",
             ),
